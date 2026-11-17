@@ -1,0 +1,261 @@
+# esim-toolman tool manifest
+#
+# This file is the only place that names eSim's external tools, their
+# versions, packages and health checks. The code reads it through
+# esim_toolman/manifest.py, which rejects unknown keys, so a typo is an error
+# instead of being silently ignored.
+#
+# Every version and package choice has a `source` saying where it came from:
+# a file and line in FOSSEE/eSim (commit d86c189, eSim 2.6), or a section of
+# docs/esim-dependencies.md.
+#
+# Schema (version 1)
+# ------------------
+# [platforms.ubuntu]
+#   supported_versions  Releases that get no "untested release" warning.
+#
+# [tools.<key>]         <key> is the tool's short name on the command line.
+#   name                Display name.
+#   purpose             What eSim uses the tool for.
+#   required            true if eSim cannot do its basic job without it.
+#   needed_for          eSim features that stop working without the tool.
+#   executables         Program names to look for, in this order. The lookup
+#                       adds ".exe" on Windows; it is not written here.
+#
+# [tools.<key>.search_paths]
+#   linux, windows      Folders to search besides PATH. "~" and environment
+#                       variables are expanded, and "*" is a wildcard.
+#
+# [tools.<key>.version]
+#   args                Arguments that make the program print its version.
+#   pattern             Regex; capture group 1 is the version number.
+#   minimum             Lowest version eSim works with (optional).
+#   recommended         Version eSim ships or targets (optional).
+#   source
+#
+# [tools.<key>.install.apt]
+#   packages            apt packages to install.
+#   fallback            Packages to try if `packages` cannot be installed.
+#   conflicts           Packages that must NOT be installed.
+#   note, source
+#
+# [tools.<key>.install.winget]
+#   available           true only for packages confirmed with `winget show`.
+#   id                  winget package ID; only when available = true.
+#   note                Required when available = false: how to fix it by hand.
+#   source
+#
+# [[tools.<key>.checks]]  Extra health checks for the doctor.
+#   kind = "output_excludes"
+#       args, text, ignore_case (optional, default false): run the program
+#       with `args`; the check fails if the output contains `text`.
+#   kind = "compile_test"
+#       files (table of file name -> contents) and commands (list of
+#       argument lists): write the files into a temporary folder and run the
+#       program there once per argument list; the check fails if a run fails.
+#   Both kinds also need: problem, fix, source.
+#   The doctor that runs these checks is not written yet.
+
+schema_version = 1
+
+[platforms.ubuntu]
+# eSim 2.6 also lists 23.04 and 25.04, but both are end-of-life
+# (docs/esim-dependencies.md, known installer problem 4). esim-toolman itself
+# has not been run on any release yet.
+supported_versions = ["24.04", "26.04"]
+
+
+# ---------------------------------------------------------------- ngspice --
+
+[tools.ngspice]
+name = "Ngspice"
+purpose = "SPICE circuit simulator that runs every eSim simulation"
+required = true
+needed_for = ["simulation"]
+# The official Windows build's console program is ngspice_con.exe, so it is
+# looked for first; that way detection never opens a GUI window by mistake.
+# eSim's own Windows bundle ships a console ngspice.exe instead.
+executables = ["ngspice_con", "ngspice"]
+
+[tools.ngspice.search_paths]
+# eSim's own build, made by eSim's Ubuntu installer.
+linux = ['~/nghdl-simulator/install_dir/bin']
+# eSim's Windows install: its own build first, then the official fallback copy.
+windows = [
+    '%SystemDrive%\FOSSEE\eSim\tools\nghdl\install_dir\bin',
+    '%SystemDrive%\FOSSEE\eSim\tools\ngspice\bin',
+]
+
+[tools.ngspice.version]
+args = ["--version"]
+pattern = 'ngspice-(\d+(?:\.\d+)*)'
+minimum = "42"
+recommended = "45.2"
+source = "eSim builds ngspice 45.2 (configure.ac:19 in nghdl/nghdl-simulator-source.tar.xz); d_cosim and the ivlng bridge need ngspice >= 42 (nghdl/install-nghdl.sh:294-297). Output format: ngspice src/frontend/misccoms.c:187-199"
+
+[tools.ngspice.install.apt]
+packages = ["ngspice"]
+note = "Distro ngspice: plain simulation works, but it lacks eSim's own ghdl.cm and Ngveri.cm code models, so VHDL and Verilator co-simulation need eSim's build (nghdl/install-nghdl.sh). eSim's installer removes this package and points /usr/bin/ngspice at its own build, so do not install it over eSim's build."
+source = "eSim nghdl/install-nghdl.sh:339-356"
+
+[tools.ngspice.install.winget]
+available = false
+note = "No winget package. Install eSim for Windows (it bundles ngspice), or download the official Windows build from https://ngspice.sourceforge.io/download.html and add its bin folder to PATH."
+source = "winget search ngspice found nothing (docs/esim-dependencies.md, winget packages, checked 2026-11-17)"
+
+
+# ------------------------------------------------------------------ KiCad --
+
+[tools.kicad]
+name = "KiCad"
+purpose = "Schematic editor; eSim turns KiCad netlists into SPICE netlists"
+required = true
+needed_for = ["schematic-capture"]
+# kicad-cli prints its version without opening a window. It first shipped
+# with KiCad 7, so an older KiCad shows up as not found.
+executables = ["kicad-cli"]
+
+[tools.kicad.search_paths]
+# eSim's bundled KiCad first, then a normal KiCad install (eSim's esim.bat
+# looks in the same places).
+windows = [
+    '%SystemDrive%\FOSSEE\eSim\tools\kicad\bin',
+    '%ProgramFiles%\KiCad\*\bin',
+]
+
+[tools.kicad.version]
+args = ["version"]
+pattern = '(\d+(?:\.\d+)+)'
+minimum = "7"
+recommended = "9"
+source = "eSim refuses KiCad 6 and needs >= 7 (Ubuntu/install-eSim.sh:733-737); it ships 9.0.3 on Windows (windows/deps-manifest.json:54) and targets 9 on Ubuntu 24.04 and 26.04 (Ubuntu/install-eSim.sh:724, 731). Output format: windows/build-windows.ps1:936-938"
+
+[tools.kicad.install.apt]
+packages = ["kicad", "kicad-footprints", "kicad-libraries", "kicad-symbols", "kicad-templates"]
+note = "Installed from the distro archive only; esim-toolman does not add PPAs. If the distro KiCad is older than the minimum, eSim's own installer gets a newer one from the PPA kicad/kicad-9.0-releases."
+source = "eSim Ubuntu/install-eSim.sh:903-923"
+
+[tools.kicad.install.winget]
+available = true
+id = "KiCad.KiCad"
+note = "winget installs the latest KiCad (10.0.8 when checked). eSim 2.6 ships and tests 9.0.3; whether it works with KiCad 10 is UNVERIFIED."
+source = "winget show --id KiCad.KiCad (docs/esim-dependencies.md, winget packages, checked 2026-11-17)"
+
+
+# ------------------------------------------------------------------- GHDL --
+
+[tools.ghdl]
+name = "GHDL"
+purpose = "Compiles VHDL for eSim's NGHDL mixed-signal simulation"
+required = false
+needed_for = ["vhdl-cosim"]
+executables = ["ghdl"]
+
+[tools.ghdl.search_paths]
+# eSim's Windows install, "HDL toolchain" component (bundled MSYS2).
+windows = ['%SystemDrive%\FOSSEE\eSim\tools\msys64\mingw64\bin']
+
+[tools.ghdl.version]
+args = ["--version"]
+pattern = 'GHDL (\d+(?:\.\d+)+)'
+# No minimum: eSim installs whatever version apt ships. The backend is what
+# matters, and the checks below test it.
+source = "eSim nghdl/install-nghdl.sh:216-267"
+
+[tools.ghdl.install.apt]
+packages = ["ghdl-llvm"]
+fallback = ["ghdl-gcc"]
+conflicts = ["ghdl-mcode"]
+note = "Never install the 'ghdl' meta-package: apt picks ghdl-mcode for it, and the mcode backend cannot link eSim's VHDL server. On Ubuntu 24.04 ghdl-llvm installs but cannot compile; the compile_test check catches that, and ghdl-gcc is the fix."
+source = "eSim nghdl/install-nghdl.sh:219-229; nghdl/install-nghdl-scripts/GHDL-BACKEND-26.04.md:46-59, 108-130"
+
+[tools.ghdl.install.winget]
+available = false
+note = "The only winget package, ghdl.ghdl.ucrt64.mcode, uses the mcode backend, which eSim cannot use. Install eSim for Windows with its 'HDL toolchain' component, which bundles GHDL with the LLVM backend."
+source = "winget show --id ghdl.ghdl.ucrt64.mcode (docs/esim-dependencies.md, winget packages, checked 2026-11-17); eSim windows/installer.iss:77, windows/build-windows.ps1:402-403"
+
+[[tools.ghdl.checks]]
+kind = "output_excludes"
+args = ["--version"]
+text = "mcode"
+ignore_case = true
+problem = "GHDL uses the mcode backend, which cannot link eSim's VHDL server, so VHDL co-simulation fails"
+fix = "Install ghdl-llvm or ghdl-gcc and remove ghdl-mcode"
+source = "eSim nghdl/install-nghdl.sh:242-248; nghdl/install-nghdl-scripts/GHDL-BACKEND-26.04.md:24-44"
+
+[[tools.ghdl.checks]]
+kind = "compile_test"
+commands = [["-a", "t.vhdl"], ["-e", "t"]]
+problem = "GHDL is installed but cannot compile VHDL (known for ghdl-llvm on Ubuntu 24.04), so VHDL co-simulation hangs"
+fix = "Switch to the gcc backend: install ghdl-gcc"
+source = "eSim nghdl/install-nghdl.sh:199-213, 250-266; nghdl/install-nghdl-scripts/GHDL-BACKEND-26.04.md:108-130"
+
+# The files for the compile_test check just above.
+[tools.ghdl.checks.files]
+"t.vhdl" = """
+entity t is end t;
+architecture a of t is begin end a;
+"""
+
+
+# -------------------------------------------------------------- Verilator --
+
+[tools.verilator]
+name = "Verilator"
+purpose = "Compiles Verilog into ngspice code models (eSim's NgVeri)"
+required = false
+needed_for = ["verilog-models"]
+executables = ["verilator"]
+
+[tools.verilator.search_paths]
+# eSim's Windows install, "HDL toolchain" component (bundled MSYS2). Whether
+# verilator runs outside the MSYS2 shell is UNVERIFIED.
+windows = ['%SystemDrive%\FOSSEE\eSim\tools\msys64\mingw64\bin']
+
+[tools.verilator.version]
+args = ["--version"]
+pattern = 'Verilator (\d+\.\d+)'
+minimum = "5.0"
+source = "eSim needs Verilator 5 (Ubuntu/install-eSim.sh:733-737); version command: nghdl/install-nghdl.sh:191"
+
+[tools.verilator.install.apt]
+packages = ["verilator"]
+source = "eSim nghdl/install-nghdl.sh:188-189"
+
+[tools.verilator.install.winget]
+available = false
+note = "No winget package. Install eSim for Windows with its 'HDL toolchain' component, which bundles Verilator through MSYS2."
+source = "winget search verilator found nothing (docs/esim-dependencies.md, winget packages, checked 2026-11-17); eSim windows/installer.iss:77"
+
+
+# --------------------------------------------------------- Icarus Verilog --
+
+[tools.iverilog]
+name = "Icarus Verilog"
+purpose = "Verilog simulator behind eSim's Verilog Verifier and d_cosim co-simulation"
+required = false
+needed_for = ["verilog-verifier", "verilog-cosim"]
+executables = ["iverilog"]
+
+[tools.iverilog.search_paths]
+# eSim's own build with libvvp, which d_cosim needs.
+linux = ['~/nghdl-simulator/iverilog/bin']
+windows = ['%SystemDrive%\FOSSEE\eSim\library\bin\iverilog\bin']
+
+[tools.iverilog.version]
+# -V prints the version to stdout and exits with 0 (driver/main.c at de415b2f).
+args = ["-V"]
+pattern = 'Icarus Verilog version (\d+(?:\.\d+)*)'
+minimum = "12"
+source = "eSim pins a post-v12 commit (nghdl/install-nghdl.sh:97; windows/deps-manifest.json:40). -V behaviour: docs/esim-dependencies.md, detection details"
+
+[tools.iverilog.install.apt]
+packages = ["iverilog"]
+note = "apt's iverilog has no libvvp: the Verilog Verifier works, d_cosim does not. eSim builds Icarus from source with --enable-libvvp for d_cosim."
+source = "eSim nghdl/install-nghdl.sh:21-27, 366-430"
+
+[tools.iverilog.install.winget]
+available = true
+id = "Icarus.Verilog"
+note = "Bleyer's v12 build without libvvp: the Verilog Verifier works, d_cosim does not."
+source = "winget show --id Icarus.Verilog (docs/esim-dependencies.md, winget packages, checked 2026-11-17); eSim windows/deps-manifest.json:33-37"
