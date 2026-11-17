@@ -39,11 +39,11 @@ I also searched `src/` to see which Python packages eSim actually imports.
 
 | Tool | What eSim uses it for | Version eSim installs or requires (exact quote) | Ubuntu install | Windows install (from `windows/`) | Version command | Env vars / paths eSim expects |
 |---|---|---|---|---|---|---|
-| **ngspice** (eSim's "nghdl-simulator" build) | SPICE simulation engine. eSim's build adds code models for GHDL (`ghdl.cm`), Verilator (`Ngveri`) and Icarus (`ivlng`, d_cosim) | `m4_define([ngspice_major_version], [45.2])`, from `configure.ac` line 19 inside `nghdl/nghdl-simulator-source.tar.xz`<br>Windows fallback: `"version": "45.2"`, from `windows/deps-manifest.json:26` | **Built from source** (`nghdl/install-nghdl.sh:339-348`: `--enable-xspice --disable-debug --disable-maintainer-mode`) into `~/nghdl-simulator/install_dir`. apt `ngspice` is purged (`:353`) | Built inside MSYS2 from the same tarball when the installer is packaged (`build-windows.ps1:633`), installed to `{app}\tools\nghdl\install_dir`. The official 45.2 build sits in `{app}\tools\ngspice` as a fallback (`:290-303`) | `ngspice --version` (used at `build-windows.ps1:746`) | `/usr/bin/ngspice` → `~/nghdl-simulator/install_dir/bin/ngspice` (`install-nghdl.sh:356`)<br>`~/.nghdl/config.ini` `[NGHDL]` `NGHDL_HOME`, `DIGITAL_MODEL`, `RELEASE` (`:436-439`)<br>Windows: `SPICE_LIB_DIR`, `PATH` (`esim.bat:16-25`) |
+| **ngspice** (eSim's "nghdl-simulator" build) | SPICE simulation engine. eSim's build adds code models for GHDL (`ghdl.cm`), Verilator (`Ngveri`) and Icarus (`ivlng`, d_cosim) | `m4_define([ngspice_major_version], [45.2])`, from `configure.ac` line 19 inside `nghdl/nghdl-simulator-source.tar.xz`<br>Windows fallback: `"version": "45.2"`, from `windows/deps-manifest.json:26` | **Built from source** (`nghdl/install-nghdl.sh:339-348`: `--enable-xspice --disable-debug --disable-maintainer-mode`) into `~/nghdl-simulator/install_dir`. apt `ngspice` is purged (`:353`) | Built inside MSYS2 from the same tarball when the installer is packaged (`build-windows.ps1:633`), installed to `{app}\tools\nghdl\install_dir`. The official 45.2 build sits in `{app}\tools\ngspice` as a fallback (`:290-303`) | `ngspice --version` (used at `build-windows.ps1:746`). With the official Windows build: `ngspice_con --version` (see [Detection details](#detection-details-checked-for-esim-toolman)) | `/usr/bin/ngspice` → `~/nghdl-simulator/install_dir/bin/ngspice` (`install-nghdl.sh:356`)<br>`~/.nghdl/config.ini` `[NGHDL]` `NGHDL_HOME`, `DIGITAL_MODEL`, `RELEASE` (`:436-439`)<br>Windows: `SPICE_LIB_DIR`, `PATH` (`esim.bat:16-25`) |
 | **KiCad** | Schematic capture. eSim converts KiCad netlists to SPICE (`ARCHITECTURE.md:23`, `:32`) | Minimum major version depends on the Ubuntu release. 24.04: `KICAD_SOURCE="ppa"; KICAD_PPA="kicad/kicad-9.0-releases"; KICAD_MIN_MAJOR=9` (`Ubuntu/install-eSim.sh:724`). 23.04 → 7 (`:720`), 25.04 → 8 (`:728`), 26.04 → 9 (`:731`)<br>Windows: `"version": "9.0.3"` (`deps-manifest.json:54`) | apt: `kicad kicad-footprints kicad-libraries kicad-symbols kicad-templates`, `--no-install-recommends` (`install-eSim.sh:922-923`). Comes from PPA `kicad/kicad-9.0-releases` on 23.04/24.04 and from universe on 25.04/26.04 | The official KiCad installer is unpacked with 7z, trimmed, and bundled at `{app}\tools\kicad`; the KiCad installer itself never runs (`build-windows.ps1:902-931`). A system KiCad under `%ProgramFiles%\KiCad\*` is the fallback (`esim.bat:30`) | `kicad-cli version` (`build-windows.ps1:936`)<br>Ubuntu installer uses `dpkg-query -W -f='${Version}' kicad` (`install-eSim.sh:891`) | `~/.config/kicad/<N.M>/sym-lib-table` (`install-eSim.sh:973-994`)<br>`~/.esim/kicad_static`, `~/.esim/kicad_symbols` (`:954`, `:965`)<br>`KicadLib` in `~/.esim/config.ini` (`:763`)<br>Windows: `%APPDATA%\kicad\<N.M>\sym-lib-table` (`windows_bootstrap.py:246`) |
 | **GHDL** | Compiles VHDL for NGHDL mixed-signal co-simulation. Links eSim's socket server with `ghdl -e -Wl,...` (`GHDL-BACKEND-26.04.md:26-31`) | **Not pinned.** The backend is what matters: `sudo apt-get install -y ghdl-llvm`, falling back to `ghdl-gcc` (`install-nghdl.sh:222-224`). The doc records 5.0.1 on 26.04 (`GHDL-BACKEND-26.04.md:51`) and 4.1.0 on 24.04 (`:112`) | apt `ghdl-llvm`, else `ghdl-gcc`. Never the `ghdl` meta-package (`install-nghdl.sh:219-221`). `ghdl-mcode` is purged (`:229`). A compile smoke test runs after install (`:204-213`, `:254-266`) | MSYS2 package `mingw-w64-x86_64-ghdl-llvm` (`build-windows.ps1:403`), included only with the optional `hdl` component (`installer.iss:77`) | `ghdl --version` (output must not mention mcode; `install-nghdl.sh:243`) | `GHDL_BACKEND` is optional; if set it must be `llvm` or `gcc` (`install-nghdl.sh:246`; `GHDL-BACKEND-26.04.md:98`)<br>An old `/usr/local/bin/ghdl` takes precedence in PATH and breaks co-simulation (`install-eSim.sh:798-808`) |
 | **Verilator** | Compiles Verilog into ngspice code models (NgVeri) (`ARCHITECTURE.md:65`) | Needs major version 5: `Its apt repositories ship Verilator 4 and KiCad 6, but this eSim needs` / `Verilator 5 and KiCad >= 7` (`install-eSim.sh:735-736`). No other pin | apt `verilator` (`install-nghdl.sh:189`) | MSYS2 `mingw-w64-x86_64-verilator` (`build-windows.ps1:403`), `hdl` component | `verilator --version` (`install-nghdl.sh:191`) | `VERILATOR_ROOT`, read with `verilator --getenv VERILATOR_ROOT`; falls back to `/usr/share/verilator/include` (`install-nghdl.sh:317-318`)<br>Windows: a comment says the app uses `VERILATOR_ROOT=<msys>\mingw64` (`build-windows.ps1:474`). Where the app sets it is **UNVERIFIED** (`src/` not read) |
-| **Icarus Verilog** (with libvvp) | Verilog Verifier, plus d_cosim co-simulation through ngspice's `ivlng` adapter, which loads libvvp at run time (`install-nghdl.sh:21-27`) | `ICARUS_REF="de415b2f03c1b41ab5b46faa9632716d98c1cd86"` (`install-nghdl.sh:97`)<br>Windows: `"version": "de415b2f (post-v12, pinned)"` (`deps-manifest.json:40`) | **Built from source** with `--enable-libvvp` into `~/nghdl-simulator/iverilog` (`:93`, `:404`). Uses `nghdl/iverilog-source.tar.xz` if present (it is **not** in the git tree), otherwise fetches the pinned commit from GitHub (`:384-400`). Fallback: apt `iverilog`, which has no libvvp and so no d_cosim (`:428`) | Built in MSYS2 from the pinned source and installed to `{app}\library\bin\iverilog` (`deps-manifest.json:44`). With `-SkipSimBuild`, Bleyer's `v12-20220611` build is used instead (`:33-37`) | `iverilog -V` (not used in eSim files; general knowledge) | `~/.nghdl/config.ini` `[COSIM]` `IVERILOG`, `VVP`, `IVERILOG_LIB` (`install-nghdl.sh:450-457`; Windows: `windows_bootstrap.py:146-159`) |
+| **Icarus Verilog** (with libvvp) | Verilog Verifier, plus d_cosim co-simulation through ngspice's `ivlng` adapter, which loads libvvp at run time (`install-nghdl.sh:21-27`) | `ICARUS_REF="de415b2f03c1b41ab5b46faa9632716d98c1cd86"` (`install-nghdl.sh:97`)<br>Windows: `"version": "de415b2f (post-v12, pinned)"` (`deps-manifest.json:40`) | **Built from source** with `--enable-libvvp` into `~/nghdl-simulator/iverilog` (`:93`, `:404`). Uses `nghdl/iverilog-source.tar.xz` if present (it is **not** in the git tree), otherwise fetches the pinned commit from GitHub (`:384-400`). Fallback: apt `iverilog`, which has no libvvp and so no d_cosim (`:428`) | Built in MSYS2 from the pinned source and installed to `{app}\library\bin\iverilog` (`deps-manifest.json:44`). With `-SkipSimBuild`, Bleyer's `v12-20220611` build is used instead (`:33-37`) | `iverilog -V`, exits with code 0 (see [Detection details](#detection-details-checked-for-esim-toolman)) | `~/.nghdl/config.ini` `[COSIM]` `IVERILOG`, `VVP`, `IVERILOG_LIB` (`install-nghdl.sh:450-457`; Windows: `windows_bootstrap.py:146-159`) |
 | **Python 3** | Runs eSim itself (`src/frontEnd/Application.py`) | Ubuntu: the system `python3`, not pinned (`install-eSim.sh:838`)<br>Windows: `"version": "3.12.10"` (`deps-manifest.json:19`) | apt `python3-full python3-venv python3-virtualenv python3-pip python3-setuptools` (`:838-840`). Creates a venv at `~/.esim/env` with `--system-site-packages` so the apt Qt is visible (`:844-849`) | A private CPython from the nuget package, installed at `{app}\python` (`build-windows.ps1:227-237`) | `python3 --version` | `~/.esim/env`<br>The `/usr/bin/esim` launcher runs `~/.esim/env/bin/python3 <eSim>/src/frontEnd/Application.py` (`install-eSim.sh:1109`) |
 | **PyQt6** (+ QtSvg) | GUI | Ubuntu apt, not pinned: `QT_PKGS="python3-pyqt6 python3-pyqt6.qtsvg pyqt6-dev-tools"` (`install-eSim.sh:71`)<br>`requirements.txt:19`: `PyQt6>=6.5.0`<br>Windows: `PyQt6>=6.6` (`requirements-windows.txt:14`) | apt (`install-eSim.sh:871`) | pip wheel installed into the private Python (`build-windows.ps1:239-240`) | `python3 -c "from PyQt6.QtCore import PYQT_VERSION_STR; print(PYQT_VERSION_STR)"` (general knowledge). eSim's own check is `python3 -c "import PyQt6.QtWidgets"` (`install-eSim.sh:878`) | The launcher sets these defaults (only if unset): `LIBGL_ALWAYS_SOFTWARE=1`, `QT_OPENGL=software`, `EGL_LOG_LEVEL=fatal` (`install-eSim.sh:1106-1108`) |
 | **QScintilla** | Code editor for project files (`requirements.txt:22`). Optional | `QSCI_PKG="python3-pyqt6.qsci"` (`install-eSim.sh:72`), not pinned<br>Windows: `PyQt6-QScintilla>=2.14` (`requirements-windows.txt:15`) | apt. If the package is missing, the installer only warns (`install-eSim.sh:872-873`) | pip | `dpkg-query -W -f='${Version}' python3-pyqt6.qsci`; Windows: `python -m pip show PyQt6-QScintilla` | — |
@@ -114,6 +114,58 @@ I also searched `src/` to see which Python packages eSim actually imports.
   `~\.esim\config.ini`, `~\.esim\kicad_symbols\`, `~\.nghdl\config.ini` (which adds `[COMPILER]` `MSYS_HOME`).
 - KiCad library table: `%APPDATA%\kicad\<N.M>\sym-lib-table` (`windows_bootstrap.py:246`). `<N.M>` comes from
   the `tools\kicad\KICAD-VERSION` file (`build-windows.ps1:928-931`).
+
+## Detection details (checked for esim-toolman)
+
+Checked on 2026-11-17 on Windows 11 with winget v1.29.380. None of the five tools is installed
+on this machine, so the version commands below were **not run**. Each output format comes from the
+evidence named in its row.
+
+### Version output formats
+
+| Tool | Command | Output looks like | Evidence |
+|---|---|---|---|
+| ngspice | `ngspice --version` | `** ngspice-45.2 : Circuit level simulation program` | The format string `"** %s-%s : %s\n"` in ngspice's `src/frontend/misccoms.c` (lines 187–199, inside `nghdl/nghdl-simulator-source.tar.xz`) |
+| KiCad | `kicad-cli version` | `9.0.3` | eSim's own build checks that this output contains the KiCad version from its manifest (`build-windows.ps1:936-938`). `kicad-cli` was added in KiCad 7 (general knowledge), so it is missing on KiCad 6 and older |
+| GHDL | `ghdl --version` | First line `GHDL 4.1.0 (...)`. A later line names the backend (llvm, gcc or mcode) | Backend line: `GHDL-BACKEND-26.04.md:81`. First-line format: general knowledge |
+| Verilator | `verilator --version` | `Verilator 5.020 2024-01-01 ...` (`5.020` means 5.20) | General knowledge |
+| Icarus Verilog | `iverilog -V` | Printed to stdout: `Icarus Verilog version 12.0 (stable) (v12_0)`. **Exit code 0** | Source of `driver/main.c` at eSim's pinned commit (see below) |
+
+**Why `iverilog -V` exits with 0.** This comes from reading
+[`driver/main.c` at commit `de415b2f`](https://raw.githubusercontent.com/steveicarus/iverilog/de415b2f03c1b41ab5b46faa9632716d98c1cd86/driver/main.c),
+not from running it:
+- `-V` sets `version_flag = 1`.
+- The banner is printed with `printf("Icarus Verilog version " VERSION " (" VERSION_TAG ")\n\n")`, which goes to stdout.
+- The "no source files" error (`return 1`) is guarded by `source_count == 0 && !version_flag`, so `-V` skips it.
+- `main` then does `if (version_flag) return t_version_only();`, and that function ends with `return 0;`.
+- `t_version_only()` also runs `ivlpp -V` and `ivl -V`. If they fail, it prints to stderr but still returns 0.
+
+Whether older releases (apt's v12, Bleyer's v12 build) behave the same way is **UNVERIFIED**.
+
+### ngspice program name on Windows
+
+- **Official ngspice Windows build:** the console program is `ngspice_con.exe`. The
+  [ngspice manual](https://ngspice.sourceforge.io/docs/ngspice-html-manual/manual.xhtml), §14.2 "MS Windows Console",
+  says: "its binary is distributed as ngspice_con.exe". Whether this build's plain `ngspice.exe`
+  is the GUI version is **UNVERIFIED**; the manual describes the two builds by configure option
+  (`--with-wingui`), not by file name.
+- **eSim's own Windows bundle:** `tools\nghdl\install_dir\bin\ngspice.exe` is a console build,
+  and `ngspice_gui.exe` is a separate GUI build used only for plot windows (`build-windows.ps1:695-729`).
+  The official fallback copy is in `tools\ngspice\bin` (`:290-303`).
+- **What this means for esim-toolman:** look for `ngspice_con` before `ngspice`, so detection
+  does not start a GUI window by mistake.
+
+### winget packages
+
+Checked with `winget search <name> --source winget`, then `winget show --id <id> --exact --source winget`.
+
+| Tool | winget ID | Version | Installer | Usable for eSim? |
+|---|---|---|---|---|
+| ngspice | — (no match for `ngspice`) | — | — | No package |
+| KiCad | `KiCad.KiCad` | latest 10.0.8; `--versions` also lists 9.0.3 to 9.0.8 | nullsoft, `github.com/KiCad/kicad-source-mirror/releases/.../kicad-10.0.8-x86_64.exe` | Yes. Note that eSim 2.6 ships and tests KiCad 9.0.3 (`deps-manifest.json:54`); whether it works with KiCad 10 is **UNVERIFIED** |
+| GHDL | `ghdl.ghdl.ucrt64.mcode` (the only match) | 6.0.0 | portable zip, `ghdl-mcode-6.0.0-ucrt64.zip` | **No.** This is the mcode backend, which cannot link eSim's VHDL server (`GHDL-BACKEND-26.04.md:34-44`) |
+| Verilator | — (no match for `verilator`) | — | — | No package |
+| Icarus Verilog | `Icarus.Verilog` | 12.2022.06.11 | inno, `https://bleyer.org/icarus/iverilog-v12-20220611-x64_setup.exe` | Partly. This is the same file eSim's `deps-manifest.json:33-37` says has **no libvvp**. The Verilog Verifier works, but d_cosim does not |
 
 ## Known installer problems
 
@@ -231,3 +283,7 @@ I also searched `src/` to see which Python packages eSim actually imports.
 - Whether the ngspice build runs out of memory on small VMs.
 - Whether `sudo apt-get` receives the proxy variables.
 - Whether the `v2.6` tag exists upstream.
+- Whether the official ngspice Windows build's plain `ngspice.exe` is the GUI version.
+- Whether older Icarus releases (apt v12, Bleyer v12) also exit with 0 for `iverilog -V`.
+- Whether `verilator` from eSim's bundled MSYS2 can run outside the MSYS2 shell on Windows.
+- Whether eSim 2.6 works with KiCad 10, which is what winget installs by default.
