@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from esim_toolman.versions import VERSION_RE, version_key
+
 SCHEMA_VERSION = 1
 """The only manifest schema version this module understands."""
 
@@ -37,7 +39,6 @@ _APT_PACKAGE_RE = re.compile(r"[a-z0-9][a-z0-9+.-]+")  # Debian package name rul
 _WINGET_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]*")
 _WINGET_VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]*")  # 9.0.3, 10.0.0-1, ...
 _FILE_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")  # no folders, no ".."
-_VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
 _UBUNTU_RELEASE_RE = re.compile(r"\d+\.\d+")
 
 
@@ -273,7 +274,7 @@ def _parse_version(value: Any, where: str) -> VersionSpec:
     recommended = (
         _version(table["recommended"], f"{where}.recommended") if "recommended" in table else None
     )
-    if minimum and recommended and _version_key(minimum) > _version_key(recommended):
+    if minimum and recommended and version_key(minimum) > version_key(recommended):
         raise ManifestError(f"{where}: minimum {minimum} is higher than recommended {recommended}")
     return VersionSpec(
         # Never empty: some tools (ngspice, for one) start an interactive
@@ -529,17 +530,4 @@ def _pattern(value: Any, where: str) -> re.Pattern[str]:
 
 def _version(value: Any, where: str) -> str:
     """The value must be a version written as dotted numbers, such as "45.2"."""
-    return _name(value, where, _VERSION_RE, 'a version made of dotted numbers, such as "45.2"')
-
-
-def _version_key(version: str) -> tuple[int, ...]:
-    """Turn "9.0.3" into (9, 0, 3) so versions compare as numbers.
-
-    Trailing zeros are dropped first, so "9", "9.0" and "9.0.0" compare equal.
-    The full version comparison for detected tools will live in versions.py;
-    this is only enough to check minimum <= recommended.
-    """
-    parts = [int(part) for part in version.split(".")]
-    while len(parts) > 1 and parts[-1] == 0:
-        parts.pop()
-    return tuple(parts)
+    return _name(value, where, VERSION_RE, 'a version made of dotted numbers, such as "45.2"')
