@@ -54,6 +54,7 @@ source = "test"
 [tools.demo.install.winget]
 available = true
 id = "Demo.Demo"
+version = "1.2.0"
 source = "test"
 
 [[tools.demo.checks]]
@@ -124,6 +125,7 @@ def test_valid_manifest_parses_every_field() -> None:
     assert tool.apt.conflicts == ("demo-broken",)
     assert tool.winget is not None
     assert (tool.winget.available, tool.winget.id) == (True, "Demo.Demo")
+    assert tool.winget.version == "1.2.0"
 
     first, second = tool.checks
     assert isinstance(first, OutputExcludesCheck)
@@ -306,15 +308,39 @@ def test_winget_unavailable_needs_a_manual_fix_note() -> None:
     expect_error(data, "tools.demo.install.winget", "'note' is required")
 
 
-def test_winget_unavailable_with_note_is_valid() -> None:
+def test_winget_unavailable_must_not_pin_a_version() -> None:
     data = valid_data()
     winget = demo(data)["install"]["winget"]
     winget["available"] = False
     del winget["id"]
     winget["note"] = "install it by hand"
+    expect_error(data, "tools.demo.install.winget", "'version' must not be set")
+
+
+def test_winget_unavailable_with_note_is_valid() -> None:
+    data = valid_data()
+    winget = demo(data)["install"]["winget"]
+    winget["available"] = False
+    del winget["id"]
+    del winget["version"]
+    winget["note"] = "install it by hand"
     parsed = parse_manifest(data).tools["demo"].winget
     assert parsed is not None
-    assert (parsed.available, parsed.id, parsed.note) == (False, None, "install it by hand")
+    assert (parsed.available, parsed.id, parsed.version) == (False, None, None)
+    assert parsed.note == "install it by hand"
+
+
+def test_winget_version_is_optional() -> None:
+    data = valid_data()
+    del demo(data)["install"]["winget"]["version"]
+    parsed = parse_manifest(data).tools["demo"].winget
+    assert parsed is not None and parsed.version is None
+
+
+def test_winget_version_must_be_a_plain_version() -> None:
+    data = valid_data()
+    demo(data)["install"]["winget"]["version"] = "9.0.3 --force"
+    expect_error(data, "tools.demo.install.winget.version", "winget version")
 
 
 # -------------------------------------------------------------- check errors
@@ -397,6 +423,13 @@ def test_real_manifest_winget_ids_are_only_the_confirmed_ones() -> None:
         if tool.winget is not None and tool.winget.available
     }
     assert available == {"kicad": "KiCad.KiCad", "iverilog": "Icarus.Verilog"}
+
+
+def test_real_manifest_pins_kicad_9_for_winget() -> None:
+    # eSim 2.6 is tested with KiCad 9.0.3; winget's latest is KiCad 10.
+    kicad = load_manifest().tools["kicad"]
+    assert kicad.winget is not None and kicad.winget.version == "9.0.3"
+    assert kicad.version.recommended == "9"
 
 
 def test_real_manifest_ghdl_checks_and_conflicts() -> None:

@@ -42,6 +42,8 @@
 # [tools.<key>.install.winget]
 #   available           true only for packages confirmed with `winget show`.
 #   id                  winget package ID; only when available = true.
+#   version             Exact winget version to install (optional; only when
+#                       available = true). Without it winget takes the latest.
 #   note                Required when available = false: how to fix it by hand.
 #   source
 #
@@ -95,7 +97,7 @@ source = "eSim builds ngspice 45.2 (configure.ac:19 in nghdl/nghdl-simulator-sou
 
 [tools.ngspice.install.apt]
 packages = ["ngspice"]
-note = "Distro ngspice: plain simulation works, but it lacks eSim's own ghdl.cm and Ngveri.cm code models, so VHDL and Verilator co-simulation need eSim's build (nghdl/install-nghdl.sh). eSim's installer removes this package and points /usr/bin/ngspice at its own build, so do not install it over eSim's build."
+note = "Distro ngspice: plain simulation works, but it lacks eSim's own ghdl.cm and Ngveri.cm code models, so VHDL and Verilator co-simulation need eSim's build (nghdl/install-nghdl.sh). eSim's installer removes this package and points /usr/bin/ngspice at its own build. Rule for esim-toolman's installer: refuse to apt-install ngspice when eSim's own build is detected (in search_paths.linux). Not enforced yet; the installer is not written."
 source = "eSim nghdl/install-nghdl.sh:339-356"
 
 [tools.ngspice.install.winget]
@@ -138,8 +140,11 @@ source = "eSim Ubuntu/install-eSim.sh:903-923"
 [tools.kicad.install.winget]
 available = true
 id = "KiCad.KiCad"
-note = "winget installs the latest KiCad (10.0.8 when checked). eSim 2.6 ships and tests 9.0.3; whether it works with KiCad 10 is UNVERIFIED."
-source = "winget show --id KiCad.KiCad (docs/esim-dependencies.md, winget packages, checked 2026-11-17)"
+# Pinned: winget's latest is KiCad 10 (10.0.8 when checked), but eSim 2.6 is
+# tested with 9.0.3, and whether it works with KiCad 10 is UNVERIFIED.
+version = "9.0.3"
+note = "Pinned to 9.0.3, the KiCad version eSim 2.6 ships and tests on Windows. winget's latest is KiCad 10, which eSim 2.6 has not been tested with."
+source = "eSim windows/deps-manifest.json:54-57 (KiCad 9.0.3). winget show --id KiCad.KiCad --version 9.0.3 gives installer SHA256 582635ced8552c07e043ce9f2eba01dc0c42c96dcb87ce12ba85db1530da593f, the same file eSim's deps-manifest.json:57 pins (checked 2026-11-17)"
 
 
 # ------------------------------------------------------------------- GHDL --

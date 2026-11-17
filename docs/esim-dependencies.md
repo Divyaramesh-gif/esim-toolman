@@ -162,7 +162,7 @@ Checked with `winget search <name> --source winget`, then `winget show --id <id>
 | Tool | winget ID | Version | Installer | Usable for eSim? |
 |---|---|---|---|---|
 | ngspice | — (no match for `ngspice`) | — | — | No package |
-| KiCad | `KiCad.KiCad` | latest 10.0.8; `--versions` also lists 9.0.3 to 9.0.8 | nullsoft, `github.com/KiCad/kicad-source-mirror/releases/.../kicad-10.0.8-x86_64.exe` | Yes. Note that eSim 2.6 ships and tests KiCad 9.0.3 (`deps-manifest.json:54`); whether it works with KiCad 10 is **UNVERIFIED** |
+| KiCad | `KiCad.KiCad` | latest 10.0.8; `--versions` also lists 9.0.3 to 9.0.8 | nullsoft, `github.com/KiCad/kicad-source-mirror/releases/.../kicad-10.0.8-x86_64.exe` | Yes, **pinned to 9.0.3** in `manifest/tools.toml`. eSim 2.6 ships and tests KiCad 9.0.3 (`deps-manifest.json:54`), and whether it works with KiCad 10 is **UNVERIFIED**. `winget show --id KiCad.KiCad --version 9.0.3` lists installer SHA256 `582635ced8552c07e043ce9f2eba01dc0c42c96dcb87ce12ba85db1530da593f`, the same hash eSim pins for the same file (`deps-manifest.json:57`) |
 | GHDL | `ghdl.ghdl.ucrt64.mcode` (the only match) | 6.0.0 | portable zip, `ghdl-mcode-6.0.0-ucrt64.zip` | **No.** This is the mcode backend, which cannot link eSim's VHDL server (`GHDL-BACKEND-26.04.md:34-44`) |
 | Verilator | — (no match for `verilator`) | — | — | No package |
 | Icarus Verilog | `Icarus.Verilog` | 12.2022.06.11 | inno, `https://bleyer.org/icarus/iverilog-v12-20220611-x64_setup.exe` | Partly. This is the same file eSim's `deps-manifest.json:33-37` says has **no libvvp**. The Verilog Verifier works, but d_cosim does not |

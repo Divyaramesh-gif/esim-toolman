@@ -35,6 +35,7 @@ _SLUG_RE = re.compile(r"[a-z][a-z0-9-]*")  # tool keys and feature names
 _EXECUTABLE_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*")  # no folders
 _APT_PACKAGE_RE = re.compile(r"[a-z0-9][a-z0-9+.-]+")  # Debian package name rules
 _WINGET_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]*")
+_WINGET_VERSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]*")  # 9.0.3, 10.0.0-1, ...
 _FILE_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")  # no folders, no ".."
 _VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
 _UBUNTU_RELEASE_RE = re.compile(r"\d+\.\d+")
@@ -81,11 +82,15 @@ class AptInstall:
 
 @dataclass(frozen=True)
 class WingetInstall:
-    """How to install a tool with winget, or why that is not possible."""
+    """How to install a tool with winget, or why that is not possible.
+
+    ``version`` pins one exact winget package version; None means the latest.
+    """
 
     available: bool
     source: str
     id: str | None = None
+    version: str | None = None
     note: str | None = None
 
 
@@ -323,16 +328,26 @@ def _parse_apt(value: Any, where: str) -> AptInstall:
 def _parse_winget(value: Any, where: str) -> WingetInstall:
     """Parse [tools.<key>.install.winget].
 
-    A confirmed package needs its ID. A tool without one must say how to
-    install it by hand (``note``) and must not carry an ID.
+    A confirmed package needs its ID and may pin an exact ``version``. A tool
+    without a package must say how to install it by hand (``note``) and must
+    not carry an ID or a version.
     """
     table = _table(value, where)
-    _check_keys(table, where, required={"available", "source"}, optional={"id", "note"})
+    _check_keys(
+        table, where,
+        required={"available", "source"},
+        optional={"id", "version", "note"},
+    )
     available = _bool(table["available"], f"{where}.available")
     if available:
         if "id" not in table:
             raise ManifestError(f"{where}: 'id' is required when available = true")
         package_id = _name(table["id"], f"{where}.id", _WINGET_ID_RE, "a winget package ID")
+        version = (
+            _name(table["version"], f"{where}.version", _WINGET_VERSION_RE, "a winget version")
+            if "version" in table
+            else None
+        )
     else:
         if "id" in table:
             raise ManifestError(f"{where}: 'id' must not be set when available = false")
@@ -341,11 +356,15 @@ def _parse_winget(value: Any, where: str) -> WingetInstall:
                 f"{where}: 'note' is required when available = false "
                 "(say how to install the tool by hand)"
             )
+        if "version" in table:
+            raise ManifestError(f"{where}: 'version' must not be set when available = false")
         package_id = None
+        version = None
     return WingetInstall(
         available=available,
         source=_str(table["source"], f"{where}.source"),
         id=package_id,
+        version=version,
         note=_optional_str(table, "note", where),
     )
 
