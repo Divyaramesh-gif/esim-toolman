@@ -95,6 +95,10 @@ class WingetInstall:
     note: str | None = None
 
 
+# Every check has `problem` and `fix` (plain words, any platform) and may add
+# `fix_linux` / `fix_windows`: the exact command for that platform.
+
+
 @dataclass(frozen=True)
 class OutputExcludesCheck:
     """Health check: the tool's output for ``args`` must not contain ``text``."""
@@ -106,6 +110,8 @@ class OutputExcludesCheck:
     fix: str
     source: str
     ignore_case: bool = False
+    fix_linux: str | None = None
+    fix_windows: str | None = None
 
 
 @dataclass(frozen=True)
@@ -119,9 +125,28 @@ class CompileTestCheck:
     problem: str
     fix: str
     source: str
+    fix_linux: str | None = None
+    fix_windows: str | None = None
 
 
-Check = OutputExcludesCheck | CompileTestCheck
+@dataclass(frozen=True)
+class OwnBuildCheck:
+    """Health check: is the program eSim's own build? It is when its real
+    path (symlinks followed) is inside one of ``paths``. If it is not,
+    ``problem`` applies and the features in ``breaks`` will not work."""
+
+    kind: ClassVar[str] = "own_build"
+    paths: tuple[str, ...]  # unexpanded, like search_paths
+    found_note: str  # shown when it IS eSim's own build
+    breaks: tuple[str, ...]
+    problem: str
+    fix: str
+    source: str
+    fix_linux: str | None = None
+    fix_windows: str | None = None
+
+
+Check = OutputExcludesCheck | CompileTestCheck | OwnBuildCheck
 """Any one health check."""
 
 
@@ -377,37 +402,61 @@ def _parse_checks(value: Any, where: str) -> tuple[Check, ...]:
     return tuple(_parse_check(item, f"{where}[{index}]") for index, item in enumerate(value))
 
 
+# For each check kind: the keys it needs and the keys it may have, on top of
+# the keys every check shares (kind, problem, fix, source, fix_linux, fix_windows).
+_CHECK_KEYS: dict[str, tuple[set[str], set[str]]] = {
+    OutputExcludesCheck.kind: ({"args", "text"}, {"ignore_case"}),
+    CompileTestCheck.kind: ({"files", "commands"}, set()),
+    OwnBuildCheck.kind: ({"paths", "found_note", "breaks"}, set()),
+}
+
+
 def _parse_check(value: Any, where: str) -> Check:
     """Parse one check. Its ``kind`` decides which other keys it must have."""
     table = _table(value, where)
     if "kind" not in table:
         raise ManifestError(f"{where}: missing required key(s): kind")
     kind = _str(table["kind"], f"{where}.kind")
-    common = {"kind", "problem", "fix", "source"}
+    if kind not in _CHECK_KEYS:
+        known = ", ".join(sorted(_CHECK_KEYS))
+        raise ManifestError(f"{where}.kind: unknown check kind {kind!r} (known: {known})")
+
+    kind_required, kind_optional = _CHECK_KEYS[kind]
+    _check_keys(
+        table, where,
+        required={"kind", "problem", "fix", "source"} | kind_required,
+        optional={"fix_linux", "fix_windows"} | kind_optional,
+    )
+    shared: dict[str, Any] = {
+        "problem": _str(table["problem"], f"{where}.problem"),
+        "fix": _str(table["fix"], f"{where}.fix"),
+        "source": _str(table["source"], f"{where}.source"),
+        "fix_linux": _optional_str(table, "fix_linux", where),
+        "fix_windows": _optional_str(table, "fix_windows", where),
+    }
 
     if kind == OutputExcludesCheck.kind:
-        _check_keys(table, where, required=common | {"args", "text"}, optional={"ignore_case"})
         return OutputExcludesCheck(
             args=_str_list(table["args"], f"{where}.args"),
             text=_str(table["text"], f"{where}.text"),
-            problem=_str(table["problem"], f"{where}.problem"),
-            fix=_str(table["fix"], f"{where}.fix"),
-            source=_str(table["source"], f"{where}.source"),
             ignore_case=_bool(table.get("ignore_case", False), f"{where}.ignore_case"),
+            **shared,
         )
-
     if kind == CompileTestCheck.kind:
-        _check_keys(table, where, required=common | {"files", "commands"})
         return CompileTestCheck(
             files=_parse_files(table["files"], f"{where}.files"),
             commands=_parse_commands(table["commands"], f"{where}.commands"),
-            problem=_str(table["problem"], f"{where}.problem"),
-            fix=_str(table["fix"], f"{where}.fix"),
-            source=_str(table["source"], f"{where}.source"),
+            **shared,
         )
-
-    known = ", ".join(sorted((OutputExcludesCheck.kind, CompileTestCheck.kind)))
-    raise ManifestError(f"{where}.kind: unknown check kind {kind!r} (known: {known})")
+    return OwnBuildCheck(
+        paths=_str_list(table["paths"], f"{where}.paths"),
+        found_note=_str(table["found_note"], f"{where}.found_note"),
+        breaks=_names(
+            table["breaks"], f"{where}.breaks",
+            _SLUG_RE, "a lowercase feature name such as vhdl-cosim",
+        ),
+        **shared,
+    )
 
 
 def _parse_files(value: Any, where: str) -> tuple[tuple[str, str], ...]:

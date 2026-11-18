@@ -16,6 +16,7 @@ from esim_toolman.manifest import (
     CompileTestCheck,
     ManifestError,
     OutputExcludesCheck,
+    OwnBuildCheck,
     load_manifest,
     parse_manifest,
 )
@@ -71,10 +72,21 @@ kind = "compile_test"
 commands = [["--check", "a.txt"]]
 problem = "it cannot compile"
 fix = "fix it"
+fix_linux = "sudo apt-get install demo-lite"
 source = "test"
 
 [tools.demo.checks.files]
 "a.txt" = "hello\n"
+
+[[tools.demo.checks]]
+kind = "own_build"
+paths = ["~/own-demo"]
+breaks = ["demo-cosim"]
+found_note = "this is the own build"
+problem = "this is not the own build"
+fix = "install the own build"
+fix_windows = "run the own installer"
+source = "test"
 '''
 
 
@@ -127,12 +139,19 @@ def test_valid_manifest_parses_every_field() -> None:
     assert (tool.winget.available, tool.winget.id) == (True, "Demo.Demo")
     assert tool.winget.version == "1.2.0"
 
-    first, second = tool.checks
+    first, second, third = tool.checks
     assert isinstance(first, OutputExcludesCheck)
     assert (first.text, first.ignore_case) == ("broken", True)
+    assert (first.fix_linux, first.fix_windows) == (None, None)
     assert isinstance(second, CompileTestCheck)
     assert second.files == (("a.txt", "hello\n"),)
     assert second.commands == (("--check", "a.txt"),)
+    assert second.fix_linux == "sudo apt-get install demo-lite"
+    assert isinstance(third, OwnBuildCheck)
+    assert third.paths == ("~/own-demo",)
+    assert third.breaks == ("demo-cosim",)
+    assert third.found_note == "this is the own build"
+    assert third.fix_windows == "run the own installer"
 
 
 def test_optional_parts_can_be_left_out() -> None:
@@ -377,6 +396,30 @@ def test_compile_test_needs_commands() -> None:
     expect_error(data, "tools.demo.checks[1].commands", "non-empty list")
 
 
+def test_own_build_needs_paths() -> None:
+    data = valid_data()
+    del demo(data)["checks"][2]["paths"]
+    expect_error(data, "tools.demo.checks[2]", "missing", "paths")
+
+
+def test_own_build_breaks_must_be_feature_names() -> None:
+    data = valid_data()
+    demo(data)["checks"][2]["breaks"] = ["Demo Co-Sim"]
+    expect_error(data, "tools.demo.checks[2].breaks[0]", "feature name")
+
+
+def test_platform_fix_must_be_a_string() -> None:
+    data = valid_data()
+    demo(data)["checks"][0]["fix_linux"] = ["sudo", "apt-get"]
+    expect_error(data, "tools.demo.checks[0].fix_linux")
+
+
+def test_unknown_platform_fix_key() -> None:
+    data = valid_data()
+    demo(data)["checks"][0]["fix_macos"] = "brew install demo"
+    expect_error(data, "tools.demo.checks[0]", "unknown", "fix_macos")
+
+
 # ------------------------------------------------------------- load_manifest
 
 
@@ -440,6 +483,19 @@ def test_real_manifest_ghdl_checks_and_conflicts() -> None:
     compile_test = ghdl.checks[1]
     assert isinstance(compile_test, CompileTestCheck)
     assert compile_test.files[0][0] == "t.vhdl"
+    assert compile_test.fix_linux == "sudo apt-get install ghdl-gcc"
+
+
+def test_real_manifest_ngspice_own_build_check() -> None:
+    ngspice = load_manifest().tools["ngspice"]
+    (check,) = ngspice.checks
+    assert isinstance(check, OwnBuildCheck)
+    assert "~/nghdl-simulator" in check.paths
+    assert check.breaks == ("vhdl-cosim", "verilog-models")
+    # Every feature an own_build check says it breaks must be a feature some
+    # tool in the manifest provides.
+    features = {f for tool in load_manifest().tools.values() for f in tool.needed_for}
+    assert set(check.breaks) <= features
 
 
 @pytest.mark.parametrize(

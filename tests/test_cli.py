@@ -77,6 +77,9 @@ class FakeSystem:
     def status(self, *extra: str) -> int:
         return cli.main(["--manifest", str(self.manifest), "status", *extra])
 
+    def doctor(self, *extra: str) -> int:
+        return cli.main(["--manifest", str(self.manifest), "doctor", *extra])
+
 
 @pytest.fixture
 def system(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeSystem:
@@ -183,6 +186,51 @@ def test_broken_manifest_exits_2(system: FakeSystem, capsys: pytest.CaptureFixtu
     assert system.status() == 2
     err = capsys.readouterr().err
     assert "esim-toolman:" in err and "schema_version" in err
+
+
+# ------------------------------------------------------------------- doctor
+
+
+def test_doctor_puts_error_groups_first_and_ends_with_a_summary(
+    system: FakeSystem, capsys: pytest.CaptureFixture[str]
+) -> None:
+    system.programs["beta"] = "beta 1.0\n"  # required alpha is missing
+
+    assert system.doctor() == 1
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "Platform: Linux (Ubuntu 24.04 LTS)"
+    assert lines[1] == "Read-only: the doctor changed nothing."
+    alpha = lines.index("Alpha (required)")
+    assert alpha < lines.index("Platform") and alpha < lines.index("Beta")
+    assert lines[alpha + 1].startswith("  ERROR    Alpha was not found")
+    assert lines[alpha + 2].startswith("           Fix: Install Alpha by hand")
+    assert lines[-1] == "1 error, 0 warnings, 2 OK"
+
+
+def test_doctor_exits_0_when_there_are_only_warnings(system: FakeSystem) -> None:
+    system.programs["alpha"] = "alpha 1.5\n"  # below recommended: a WARNING
+    assert system.doctor() == 0
+
+
+def test_doctor_json(system: FakeSystem, capsys: pytest.CaptureFixture[str]) -> None:
+    system.programs["alpha"] = "alpha 0.9\n"  # too old: an ERROR
+
+    assert system.doctor("--json") == 1
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["platform"]["system"] == "linux"
+    assert report["summary"] == {"errors": 1, "warnings": 1, "ok": 1}
+    first = report["findings"][0]
+    assert first["tool"] == "alpha"
+    assert first["severity"] == "ERROR"
+    assert first["check"] == "installed"
+    assert "older than the minimum 1.0" in first["problem"]
+
+
+def test_doctor_with_a_broken_manifest_exits_2(system: FakeSystem) -> None:
+    system.manifest.write_text("schema_version = 2\n[tools]\n", encoding="utf-8")
+    assert system.doctor() == 2
 
 
 def test_no_command_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:

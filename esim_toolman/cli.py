@@ -1,13 +1,14 @@
 """Command-line interface: ``python -m esim_toolman <command>``.
 
-Only ``status`` exists so far. It is read-only: for every tool in the
-manifest it finds the program, runs its version command, and prints a table
-(or JSON with ``--json``).
+Both commands are read-only and both accept ``--json``:
 
-Exit codes:
-  0  every required tool is OK
-  1  at least one required tool is not OK
-  2  esim-toolman could not run (bad arguments or a broken manifest)
+  status  for every tool: is it installed, which version, is that OK?
+          Exit code 0 if every required tool is OK, otherwise 1.
+  doctor  diagnoses problems and suggests a fix for this platform.
+          Exit code 1 if there is any ERROR finding, otherwise 0.
+
+Exit code 2 means esim-toolman could not run (bad arguments or a broken
+manifest).
 """
 
 import argparse
@@ -18,6 +19,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from esim_toolman.detect import DetectResult, detect_tool
+from esim_toolman.doctor import (
+    PLATFORM,
+    Finding,
+    Severity,
+    grouped,
+    run_doctor,
+    summarize,
+    summary_line,
+)
 from esim_toolman.manifest import (
     DEFAULT_MANIFEST_PATH,
     Manifest,
@@ -144,17 +154,73 @@ def format_json(info: PlatformInfo, statuses: Sequence[ToolStatus]) -> str:
     return json.dumps(report, indent=2)
 
 
-def run_status(manifest_path: Path, *, as_json: bool) -> int:
-    """The ``status`` command. Returns the exit code."""
+def format_doctor_text(manifest: Manifest, info: PlatformInfo, findings: Sequence[Finding]) -> str:
+    """The doctor report: findings grouped by tool (already ordered with
+    ERRORs first), each with what it breaks and how to fix it, then a
+    summary line."""
+    lines = [f"Platform: {info.describe()}", "Read-only: the doctor changed nothing.", ""]
+    indent = " " * 11  # lines up with the text after the severity label
+    for key, group in grouped(findings):
+        heading = PLATFORM if key is None else group[0].tool_name
+        if key is not None and manifest.tools[key].required:
+            heading += " (required)"
+        lines.append(heading)
+        for finding in group:
+            lines.append(f"  {finding.severity.value:<8} {finding.problem}")
+            if finding.breaks:
+                lines.append(f"{indent}Breaks: {', '.join(finding.breaks)}")
+            if finding.fix:
+                first, *rest = finding.fix.splitlines()
+                lines.append(f"{indent}Fix: {first}")
+                lines += [f"{indent}     {line}" for line in rest]
+        lines.append("")
+    lines.append(summary_line(summarize(findings)))
+    return "\n".join(lines)
+
+
+def format_doctor_json(info: PlatformInfo, findings: Sequence[Finding]) -> str:
+    """The same doctor report as JSON."""
+    report = {
+        "platform": info.to_dict(),
+        "findings": [finding.to_dict() for finding in findings],
+        "summary": summarize(findings),
+    }
+    return json.dumps(report, indent=2)
+
+
+def _load(manifest_path: Path) -> Manifest | None:
+    """Load the manifest, or print why it is broken and return None."""
     try:
-        manifest = load_manifest(manifest_path)
+        return load_manifest(manifest_path)
     except ManifestError as exc:
         print(f"esim-toolman: {exc}", file=sys.stderr)
+        return None
+
+
+def run_status(manifest_path: Path, *, as_json: bool) -> int:
+    """The ``status`` command. Returns the exit code."""
+    manifest = _load(manifest_path)
+    if manifest is None:
         return EXIT_ERROR
     info = detect_platform(manifest.ubuntu_supported_versions)
     statuses = check_tools(manifest, info)
     print(format_json(info, statuses) if as_json else format_table(info, statuses))
     return EXIT_OK if required_tools_ok(statuses) else EXIT_NOT_OK
+
+
+def run_doctor_command(manifest_path: Path, *, as_json: bool) -> int:
+    """The ``doctor`` command. Returns 1 if any finding is an ERROR, else 0."""
+    manifest = _load(manifest_path)
+    if manifest is None:
+        return EXIT_ERROR
+    info = detect_platform(manifest.ubuntu_supported_versions)
+    findings = run_doctor(manifest, info)
+    if as_json:
+        print(format_doctor_json(info, findings))
+    else:
+        print(format_doctor_text(manifest, info, findings))
+    has_error = any(finding.severity is Severity.ERROR for finding in findings)
+    return EXIT_NOT_OK if has_error else EXIT_OK
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -175,6 +241,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="show which tools are installed and whether their versions are OK (read-only)",
     )
     status.add_argument("--json", action="store_true", help="print JSON instead of a table")
+    doctor = commands.add_parser(
+        "doctor",
+        help="diagnose problems and suggest fixes for this platform (read-only)",
+    )
+    doctor.add_argument("--json", action="store_true", help="print JSON instead of text")
     return parser
 
 
@@ -186,4 +257,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "status":
         return run_status(args.manifest, as_json=args.json)
+    if args.command == "doctor":
+        return run_doctor_command(args.manifest, as_json=args.json)
     return EXIT_ERROR  # not reached: argparse only accepts known commands

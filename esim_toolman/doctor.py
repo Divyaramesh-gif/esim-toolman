@@ -1,0 +1,573 @@
+"""Diagnose eSim's external tools and suggest fixes. Read-only.
+
+run_doctor() looks at the platform and at every tool in the manifest and
+returns a list of Findings. A Finding is one observation: a severity, the
+problem in plain words, the eSim features it breaks, and a fix for this
+platform. Nothing here installs or changes anything. The only programs it
+starts are the tools themselves (version commands and the manifest's
+checks, which work in a temporary folder that is deleted afterwards) and
+dpkg-query, which only reads the package list.
+
+Severity rules:
+  ERROR    a required tool is missing, or an installed tool cannot work
+           (older than eSim's minimum, a failed check, a conflicting package)
+  WARNING  eSim still works, but something is missing or not ideal: an
+           optional tool is missing, a version is below the recommended one
+           or unreadable, a program is not on PATH, the platform is untested
+  OK       checked and fine
+"""
+
+import itertools
+import os
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+
+from esim_toolman.detect import (
+    DEFAULT_TIMEOUT_SECONDS,
+    DetectResult,
+    Problem,
+    Runner,
+    Which,
+    detect_tool,
+    expand_search_path,
+    run_command,
+    show_command,
+)
+from esim_toolman.manifest import (
+    Check,
+    CompileTestCheck,
+    Manifest,
+    OutputExcludesCheck,
+    OwnBuildCheck,
+    Tool,
+)
+from esim_toolman.platform_info import PlatformInfo
+from esim_toolman.versions import Status, classify, extract_version
+
+COMPILE_TIMEOUT_SECONDS = 60.0
+"""Time limit for each command of a compile_test check."""
+
+PLATFORM = "Platform"
+"""The group name for findings about the computer rather than one tool."""
+
+# The package manager each system's install commands need.
+_PACKAGE_MANAGER = {"linux": "apt-get", "windows": "winget"}
+_PACKAGE_MANAGER_FIX = {
+    "apt-get": "Install tools by hand, or use Ubuntu, where apt-get is available.",
+    "winget": "Install or update 'App Installer' from the Microsoft Store; it provides winget.",
+}
+
+
+class Severity(StrEnum):
+    """How serious a finding is. The order of _RANK is the display order."""
+
+    ERROR = "ERROR"
+    WARNING = "WARNING"
+    OK = "OK"
+
+
+_RANK = {Severity.ERROR: 0, Severity.WARNING: 1, Severity.OK: 2}
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One observation by the doctor."""
+
+    tool: str | None  # tool key, or None for platform findings
+    tool_name: str  # "KiCad", or PLATFORM
+    severity: Severity
+    check: str  # what produced it: "installed", "path", "apt_conflict", a check kind, ...
+    problem: str  # plain words; for OK, what was confirmed
+    breaks: tuple[str, ...] = ()  # eSim features that will not work
+    fix: str | None = None  # what to do on this platform; lines separated by "\n"
+
+    def to_dict(self) -> dict[str, object]:
+        """The finding as plain values, for JSON output."""
+        return {
+            "tool": self.tool,
+            "tool_name": self.tool_name,
+            "severity": self.severity.value,
+            "check": self.check,
+            "problem": self.problem,
+            "breaks": list(self.breaks),
+            "fix": self.fix,
+        }
+
+
+@dataclass(frozen=True)
+class _Context:
+    """Everything the per-tool checks need, bundled so each helper takes one
+    argument instead of eight. Tests swap in fakes through run_doctor()."""
+
+    info: PlatformInfo
+    env: Mapping[str, str]
+    home: str
+    which: Which
+    runner: Runner
+    resolve: Callable[[str], str]
+    timeout: float
+    compile_timeout: float
+
+
+# --------------------------------------------------------------------------
+# Entry points
+# --------------------------------------------------------------------------
+
+
+def run_doctor(
+    manifest: Manifest,
+    info: PlatformInfo,
+    *,
+    env: Mapping[str, str] | None = None,
+    home: str | None = None,
+    which: Which | None = None,
+    runner: Runner | None = None,
+    resolve: Callable[[str], str] | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    compile_timeout: float = COMPILE_TIMEOUT_SECONDS,
+) -> list[Finding]:
+    """Check the platform and every tool; return the findings, ordered for display.
+
+    The keyword arguments replace the real environment, home folder,
+    shutil.which, subprocess.run and os.path.realpath. Tests use them;
+    normal callers leave them out.
+    """
+    ctx = _Context(
+        info=info,
+        env=os.environ if env is None else env,
+        home=str(Path.home()) if home is None else home,
+        which=which or shutil.which,
+        runner=runner or subprocess.run,
+        resolve=resolve or os.path.realpath,
+        timeout=timeout,
+        compile_timeout=compile_timeout,
+    )
+    findings = platform_findings(manifest, info)
+    for tool in manifest.tools.values():
+        findings += tool_findings(tool, ctx)
+    return order_findings(findings)
+
+
+def order_findings(findings: Sequence[Finding]) -> list[Finding]:
+    """Group findings by tool, put groups with an ERROR first (then WARNING,
+    then all-OK), and inside each group put ERRORs first.
+
+    Python's sort is stable, so equal groups and equal findings keep their
+    original order (platform first, then manifest order).
+    """
+    groups: dict[str | None, list[Finding]] = {}
+    for finding in findings:
+        groups.setdefault(finding.tool, []).append(finding)
+    ordered = sorted(groups.values(), key=lambda group: min(_RANK[f.severity] for f in group))
+    return [f for group in ordered for f in sorted(group, key=lambda f: _RANK[f.severity])]
+
+
+def summarize(findings: Sequence[Finding]) -> dict[str, int]:
+    """Count findings per severity."""
+    return {
+        "errors": sum(f.severity is Severity.ERROR for f in findings),
+        "warnings": sum(f.severity is Severity.WARNING for f in findings),
+        "ok": sum(f.severity is Severity.OK for f in findings),
+    }
+
+
+def summary_line(counts: Mapping[str, int]) -> str:
+    """E.g. "2 errors, 1 warning, 3 OK"."""
+    return (
+        f"{_plural(counts['errors'], 'error')}, "
+        f"{_plural(counts['warnings'], 'warning')}, {counts['ok']} OK"
+    )
+
+
+def grouped(findings: Sequence[Finding]) -> list[tuple[str | None, list[Finding]]]:
+    """Ordered findings as (tool key, findings) pairs, for display."""
+    return [(key, list(group)) for key, group in itertools.groupby(findings, key=lambda f: f.tool)]
+
+
+# --------------------------------------------------------------------------
+# Platform
+# --------------------------------------------------------------------------
+
+
+def platform_findings(manifest: Manifest, info: PlatformInfo) -> list[Finding]:
+    """Warnings from platform_info, plus a missing package manager."""
+    findings: list[Finding] = []
+    if info.system == "linux":
+        tested = ", ".join(manifest.ubuntu_supported_versions) or "none"
+        warning_fix = f"For a tested setup use Ubuntu {tested}. Otherwise carry on, but expect differences."
+    else:
+        warning_fix = "Use Ubuntu Linux or Windows."
+    for warning in info.warnings:
+        findings.append(
+            Finding(None, PLATFORM, Severity.WARNING, "platform", warning, fix=warning_fix)
+        )
+
+    manager = _PACKAGE_MANAGER.get(info.system)
+    if manager is not None and manager not in info.package_managers:
+        findings.append(
+            Finding(
+                None, PLATFORM, Severity.WARNING, "package_manager",
+                f"{manager} was not found on PATH, so the {manager} commands in the fixes "
+                "cannot be run here.",
+                fix=_PACKAGE_MANAGER_FIX[manager],
+            )
+        )
+
+    if not findings:
+        findings.append(
+            Finding(
+                None, PLATFORM, Severity.OK, "platform",
+                f"{info.describe()}; {manager} is available.",
+            )
+        )
+    return findings
+
+
+# --------------------------------------------------------------------------
+# One tool
+# --------------------------------------------------------------------------
+
+
+def tool_findings(tool: Tool, ctx: _Context) -> list[Finding]:
+    """Everything the doctor checks for one tool, in this order: installed
+    and version, PATH, the manifest's checks, apt conflicts."""
+    detection = detect_tool(
+        tool, ctx.info.system,
+        env=ctx.env, home=ctx.home, which=ctx.which, runner=ctx.runner, timeout=ctx.timeout,
+    )
+    if not detection.found:
+        return [_not_found(tool, detection, ctx.info), *_apt_conflicts(tool, ctx)]
+
+    findings = [_version_finding(tool, detection, ctx)]
+    path_finding = _path_finding(tool, detection, ctx)
+    if path_finding is not None:
+        findings.append(path_finding)
+    # If even the version command could not run, the checks would fail the
+    # same way, so they are skipped.
+    if detection.problem not in (Problem.TIMEOUT, Problem.START_FAILED):
+        findings += [_run_check(tool, check, detection.path, ctx) for check in tool.checks]
+    findings += _apt_conflicts(tool, ctx)
+    return findings
+
+
+def _not_found(tool: Tool, detection: DetectResult, info: PlatformInfo) -> Finding:
+    if tool.required:
+        severity, problem = Severity.ERROR, f"{tool.name} was not found ({detection.error})."
+    else:
+        severity = Severity.WARNING
+        problem = (
+            f"{tool.name} was not found ({detection.error}). It is optional: only the "
+            "features listed below need it."
+        )
+    return Finding(
+        tool.key, tool.name, severity, "installed", problem, tool.needed_for,
+        install_fix(tool, info),
+    )
+
+
+def _version_finding(tool: Tool, detection: DetectResult, ctx: _Context) -> Finding:
+    """Judge the version, using the same rules as `status`."""
+    spec = tool.version
+    installed = extract_version(detection.output, spec.pattern)
+    status = classify(True, installed, spec.minimum, spec.recommended)
+    # If this is eSim's own build, updating it is done with eSim's
+    # installer, never with the package manager (it would replace it).
+    own_fix = _own_build_fix(tool, detection.path, ctx)
+    upgrade = own_fix or install_fix(tool, ctx.info, upgrade=True)
+
+    def finding(severity: Severity, problem: str, breaks: tuple[str, ...] = (), fix: str | None = None) -> Finding:
+        return Finding(tool.key, tool.name, severity, "installed", problem, breaks, fix)
+
+    if status is Status.TOO_OLD:
+        return finding(
+            Severity.ERROR,
+            f"{tool.name} {installed} is older than the minimum {spec.minimum} that eSim needs.",
+            tool.needed_for, upgrade,
+        )
+    if status is Status.BELOW_RECOMMENDED:
+        return finding(
+            Severity.WARNING,
+            f"{tool.name} {installed} works, but eSim recommends {spec.recommended} or newer.",
+            fix=upgrade,
+        )
+    if status is Status.UNKNOWN:
+        reason = detection.error or "its output has no version number the manifest pattern recognises"
+        return finding(
+            Severity.WARNING,
+            f"{tool.name} was found at {detection.path}, but its version could not be read: {reason}.",
+            fix=(
+                f"Run `{show_command(detection.command)}` yourself to see what it prints. "
+                f"If it fails, reinstall:\n{own_fix or install_fix(tool, ctx.info)}"
+            ),
+        )
+    return finding(Severity.OK, f"{tool.name} {installed} found at {detection.path}.")
+
+
+def _path_finding(tool: Tool, detection: DetectResult, ctx: _Context) -> Finding | None:
+    """WARNING when the program is only in an extra search folder, not on PATH."""
+    folder = detection.found_in_folder
+    if folder is None or any(ctx.which(name) for name in tool.executables):
+        return None
+    return Finding(
+        tool.key, tool.name, Severity.WARNING, "path",
+        f"{tool.name} was found in {folder}, which is not on PATH, so it cannot be started "
+        "from a terminal or by programs that look for it on PATH.",
+        fix=path_fix(folder, ctx.info.system),
+    )
+
+
+# --------------------------------------------------------------------------
+# The manifest's checks
+# --------------------------------------------------------------------------
+
+
+def _run_check(tool: Tool, check: Check, path: str, ctx: _Context) -> Finding:
+    if isinstance(check, OutputExcludesCheck):
+        return _output_excludes(tool, check, path, ctx)
+    if isinstance(check, CompileTestCheck):
+        return _compile_test(tool, check, path, ctx)
+    return _own_build(tool, check, path, ctx)
+
+
+def _output_excludes(tool: Tool, check: OutputExcludesCheck, path: str, ctx: _Context) -> Finding:
+    """ERROR if the program's output for check.args contains check.text."""
+    result = run_command((path, *check.args), runner=ctx.runner, timeout=ctx.timeout)
+    shown = show_command(result.command)
+    if result.problem in (Problem.TIMEOUT, Problem.START_FAILED):
+        return Finding(
+            tool.key, tool.name, Severity.WARNING, check.kind,
+            f"Could not run the check: {result.error}.",
+            fix=f"Run `{shown}` yourself and look at what it prints.",
+        )
+    output, text = result.output, check.text
+    if check.ignore_case:
+        output, text = output.lower(), text.lower()
+    if text in output:
+        return Finding(
+            tool.key, tool.name, Severity.ERROR, check.kind,
+            f"{_sentence(check.problem)} (`{shown}` mentions \"{check.text}\".)",
+            tool.needed_for, check_fix(check, ctx.info),
+        )
+    return Finding(
+        tool.key, tool.name, Severity.OK, check.kind,
+        f"`{shown}` does not mention \"{check.text}\".",
+    )
+
+
+def _compile_test(tool: Tool, check: CompileTestCheck, path: str, ctx: _Context) -> Finding:
+    """Write the check's files to a new temporary folder, run each command
+    there, and delete the folder again when done (even after a failure)."""
+    with tempfile.TemporaryDirectory(prefix="esim-toolman-", ignore_cleanup_errors=True) as folder:
+        for name, contents in check.files:
+            (Path(folder) / name).write_text(contents, encoding="utf-8")
+        for args in check.commands:
+            result = run_command(
+                (path, *args), runner=ctx.runner, timeout=ctx.compile_timeout, cwd=folder
+            )
+            if result.problem is not None:
+                excerpt = _excerpt(result.output)
+                problem = f"{_sentence(check.problem)} {result.error}."
+                if excerpt:
+                    problem += f" Output: {excerpt}"
+                return Finding(
+                    tool.key, tool.name, Severity.ERROR, check.kind, problem,
+                    tool.needed_for, check_fix(check, ctx.info),
+                )
+    files = ", ".join(name for name, _ in check.files)
+    return Finding(
+        tool.key, tool.name, Severity.OK, check.kind,
+        f"{tool.name} compiled a small test file ({files}) in a temporary folder.",
+    )
+
+
+def _own_build(tool: Tool, check: OwnBuildCheck, path: str, ctx: _Context) -> Finding:
+    """OK if the program is eSim's own build; otherwise a WARNING that says
+    which features need eSim's own build."""
+    is_own, real_path = _is_own_build(check, path, ctx)
+    if is_own:
+        return Finding(
+            tool.key, tool.name, Severity.OK, check.kind,
+            f"{_sentence(check.found_note)} ({real_path})",
+        )
+    return Finding(
+        tool.key, tool.name, Severity.WARNING, check.kind,
+        f"{_sentence(check.problem)} Detected: {real_path}",
+        check.breaks, check_fix(check, ctx.info),
+    )
+
+
+def _is_own_build(check: OwnBuildCheck, path: str, ctx: _Context) -> tuple[bool, str]:
+    """Follow symlinks, then test whether the real path is inside one of
+    the check's folders. Returns (is it, the real path)."""
+    real_path = ctx.resolve(path)
+    folders = [expand_search_path(p, ctx.env, ctx.home) for p in check.paths]
+    return any(_is_inside(real_path, f) for f in folders if f is not None), real_path
+
+
+def _own_build_fix(tool: Tool, path: str, ctx: _Context) -> str | None:
+    """If the detected program is eSim's own build, the fix for updating it
+    (from its own_build check); otherwise None."""
+    for check in tool.checks:
+        if isinstance(check, OwnBuildCheck) and _is_own_build(check, path, ctx)[0]:
+            return check_fix(check, ctx.info)
+    return None
+
+
+# --------------------------------------------------------------------------
+# apt conflicts (Linux only)
+# --------------------------------------------------------------------------
+
+
+def _apt_conflicts(tool: Tool, ctx: _Context) -> list[Finding]:
+    """Ask dpkg-query whether any of the tool's conflicting packages is
+    installed. dpkg-query only reads the package database."""
+    if ctx.info.system != "linux" or tool.apt is None or not tool.apt.conflicts:
+        return []
+    packages = " ".join(tool.apt.conflicts)
+    dpkg_query = ctx.which("dpkg-query")
+    if dpkg_query is None:
+        return [
+            Finding(
+                tool.key, tool.name, Severity.WARNING, "apt_conflict",
+                f"dpkg-query was not found, so these conflicting packages could not be "
+                f"checked: {packages}.",
+                fix=f"Check by hand that these are not installed: {packages}",
+            )
+        ]
+
+    findings: list[Finding] = []
+    for package in tool.apt.conflicts:
+        result = run_command(
+            (dpkg_query, "-W", "--showformat=${Status}", package),
+            runner=ctx.runner, timeout=ctx.timeout,
+        )
+        if result.problem in (Problem.TIMEOUT, Problem.START_FAILED):
+            findings.append(
+                Finding(
+                    tool.key, tool.name, Severity.WARNING, "apt_conflict",
+                    f"Could not check whether {package} is installed: {result.error}.",
+                    fix=f"Check by hand: dpkg -l {package}",
+                )
+            )
+        # "install ok installed" means installed. An unknown package makes
+        # dpkg-query exit with 1; a removed one says "... config-files".
+        elif result.exit_code == 0 and result.stdout.split()[-1:] == ["installed"]:
+            note = f" {_sentence(tool.apt.note)}" if tool.apt.note else ""
+            findings.append(
+                Finding(
+                    tool.key, tool.name, Severity.ERROR, "apt_conflict",
+                    f"The apt package {package} is installed, and it conflicts with {tool.name}.{note}",
+                    tool.needed_for, f"sudo apt-get purge {package}",
+                )
+            )
+        else:
+            findings.append(
+                Finding(
+                    tool.key, tool.name, Severity.OK, "apt_conflict",
+                    f"The conflicting apt package {package} is not installed.",
+                )
+            )
+    return findings
+
+
+# --------------------------------------------------------------------------
+# Fixes for this platform
+# --------------------------------------------------------------------------
+
+
+def install_fix(tool: Tool, info: PlatformInfo, *, upgrade: bool = False) -> str:
+    """The exact install (or upgrade) command for this platform, from the
+    manifest's apt or winget section, or its manual hint."""
+    if info.system == "linux":
+        apt = tool.apt
+        if apt is None:
+            return f"Install {tool.name} by hand; the manifest has no apt package for it."
+        packages = " ".join(apt.packages)
+        if upgrade:
+            lines = [f"sudo apt-get update && sudo apt-get install --only-upgrade {packages}"]
+        else:
+            lines = [f"sudo apt-get install {packages}"]
+        if apt.fallback:
+            lines.append(f"If that fails: sudo apt-get install {' '.join(apt.fallback)}")
+        if apt.note:
+            lines.append(f"Note: {_sentence(apt.note)}")
+        return "\n".join(lines)
+
+    if info.system == "windows":
+        winget = tool.winget
+        if winget is None:
+            return f"Install {tool.name} by hand; the manifest has no winget entry for it."
+        if not winget.available or winget.id is None:
+            return _sentence(winget.note or f"Install {tool.name} by hand.")
+        if upgrade and winget.version is None:
+            lines = [f"winget upgrade --id {winget.id} --exact"]
+        else:
+            command = f"winget install --id {winget.id} --exact"
+            if winget.version:
+                command += f" --version {winget.version}"
+            lines = [command]
+        if winget.note:
+            lines.append(f"Note: {_sentence(winget.note)}")
+        return "\n".join(lines)
+
+    return f"Install {tool.name} by hand; esim-toolman has no package manager for {info.system}."
+
+
+def check_fix(check: Check, info: PlatformInfo) -> str:
+    """A check's fix in words, plus its exact command for this platform if
+    the manifest gives one."""
+    lines = [_sentence(check.fix)]
+    command = {"linux": check.fix_linux, "windows": check.fix_windows}.get(info.system)
+    if command:
+        lines.append(command)
+    return "\n".join(lines)
+
+
+def path_fix(folder: str, system: str) -> str:
+    """How to add ``folder`` to the user's PATH on this system."""
+    if system == "windows":
+        return (
+            "Add the folder to your user PATH in PowerShell, then open a new terminal:\n"
+            '[Environment]::SetEnvironmentVariable("Path", '
+            f'[Environment]::GetEnvironmentVariable("Path", "User") + ";{folder}", "User")'
+        )
+    return (
+        "Add the folder to PATH, then open a new terminal:\n"
+        f"echo 'export PATH=\"{folder}:$PATH\"' >> ~/.bashrc"
+    )
+
+
+# --------------------------------------------------------------------------
+# Small text helpers
+# --------------------------------------------------------------------------
+
+
+def _is_inside(path: str, folder: str) -> bool:
+    """True if ``path`` is ``folder`` or somewhere below it. Paths are
+    normalised first, so "/" vs "\\" and (on Windows) letter case do not
+    matter."""
+    path = os.path.normcase(os.path.normpath(path))
+    folder = os.path.normcase(os.path.normpath(folder))
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def _sentence(text: str) -> str:
+    """Make sure the text ends like a sentence."""
+    text = text.rstrip()
+    return text if text.endswith((".", "!", "?", ")")) else text + "."
+
+
+def _excerpt(output: str, lines: int = 3, limit: int = 300) -> str:
+    """The last few non-empty lines of a command's output, shortened."""
+    kept = [line.strip() for line in output.splitlines() if line.strip()][-lines:]
+    text = " | ".join(kept)
+    return text if len(text) <= limit else "..." + text[-limit:]
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"

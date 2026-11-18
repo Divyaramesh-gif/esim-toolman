@@ -47,7 +47,7 @@
 #   note                Required when available = false: how to fix it by hand.
 #   source
 #
-# [[tools.<key>.checks]]  Extra health checks for the doctor.
+# [[tools.<key>.checks]]  Extra health checks, run by `esim-toolman doctor`.
 #   kind = "output_excludes"
 #       args, text, ignore_case (optional, default false): run the program
 #       with `args`; the check fails if the output contains `text`.
@@ -55,8 +55,14 @@
 #       files (table of file name -> contents) and commands (list of
 #       argument lists): write the files into a temporary folder and run the
 #       program there once per argument list; the check fails if a run fails.
-#   Both kinds also need: problem, fix, source.
-#   The doctor that runs these checks is not written yet.
+#       The folder is deleted afterwards.
+#   kind = "own_build"
+#       paths (folders, expanded like search_paths), found_note, breaks
+#       (eSim features): the check passes if the program's real path, with
+#       symlinks followed, is inside one of `paths`; otherwise `problem`
+#       applies and the features in `breaks` will not work.
+#   Every kind also needs problem, fix (plain words) and source, and may
+#   have fix_linux / fix_windows: the exact command for that platform.
 
 schema_version = 1
 
@@ -104,6 +110,19 @@ source = "eSim nghdl/install-nghdl.sh:339-356"
 available = false
 note = "No winget package. Install eSim for Windows (it bundles ngspice), or download the official Windows build from https://ngspice.sourceforge.io/download.html and add its bin folder to PATH."
 source = "winget search ngspice found nothing (docs/esim-dependencies.md, winget packages, checked 2026-11-17)"
+
+[[tools.ngspice.checks]]
+kind = "own_build"
+# Where eSim's own build lives. On Ubuntu, /usr/bin/ngspice is a symlink
+# into ~/nghdl-simulator, which is why symlinks are followed.
+paths = ['~/nghdl-simulator', '%SystemDrive%\FOSSEE\eSim\tools\nghdl']
+breaks = ["vhdl-cosim", "verilog-models"]
+found_note = "This is eSim's own ngspice build, which has eSim's ghdl.cm and Ngveri.cm code models, so VHDL and Verilator co-simulation can work"
+problem = "This ngspice is not eSim's own build (it is a distro or official build). It lacks eSim's ghdl.cm and Ngveri.cm code models, so VHDL and Verilator co-simulation will not work. Plain simulation still works"
+fix = "For co-simulation, install eSim's own ngspice build"
+fix_linux = "Run eSim's Ubuntu installer (./install-eSim.sh --install); it builds this ngspice with nghdl/install-nghdl.sh. Do not apt-install ngspice afterwards: that would replace eSim's build."
+fix_windows = "Install eSim for Windows from https://esim.fossee.in/; it bundles its own ngspice build."
+source = "eSim nghdl/install-nghdl.sh:279-356 (builds into ~/nghdl-simulator, symlinks /usr/bin/ngspice); windows/esim.bat:16-25; windows/build-windows.ps1:749-754 (code models in eSim's build); INSTALL:89 (download page)"
 
 
 # ------------------------------------------------------------------ KiCad --
@@ -186,6 +205,8 @@ text = "mcode"
 ignore_case = true
 problem = "GHDL uses the mcode backend, which cannot link eSim's VHDL server, so VHDL co-simulation fails"
 fix = "Install ghdl-llvm or ghdl-gcc and remove ghdl-mcode"
+fix_linux = "sudo apt-get purge ghdl-mcode && sudo apt-get install ghdl-llvm"
+fix_windows = "Reinstall eSim for Windows with its 'HDL toolchain' component, which bundles GHDL with the LLVM backend."
 source = "eSim nghdl/install-nghdl.sh:242-248; nghdl/install-nghdl-scripts/GHDL-BACKEND-26.04.md:24-44"
 
 [[tools.ghdl.checks]]
@@ -193,6 +214,8 @@ kind = "compile_test"
 commands = [["-a", "t.vhdl"], ["-e", "t"]]
 problem = "GHDL is installed but cannot compile VHDL (known for ghdl-llvm on Ubuntu 24.04), so VHDL co-simulation hangs"
 fix = "Switch to the gcc backend: install ghdl-gcc"
+fix_linux = "sudo apt-get install ghdl-gcc"
+fix_windows = "Reinstall eSim for Windows with its 'HDL toolchain' component."
 source = "eSim nghdl/install-nghdl.sh:199-213, 250-266; nghdl/install-nghdl-scripts/GHDL-BACKEND-26.04.md:108-130"
 
 # The files for the compile_test check just above.

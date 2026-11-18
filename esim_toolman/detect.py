@@ -8,11 +8,12 @@ Read-only. For one tool from the manifest, detect_tool():
 2. looks for the tool's program names in those folders first, then on
    PATH. eSim's own Windows launcher also puts its bundled tools in front
    of PATH (windows/esim.bat:16-31);
-3. runs "<program> <version args>" directly, never through a shell, with
-   stdin closed and a time limit, capturing stdout and stderr;
+3. runs "<program> <version args>" with run_command(): never through a
+   shell, with stdin closed and a time limit, capturing stdout and stderr;
 4. returns a DetectResult saying what happened.
 
-Reading the version number out of the output is versions.py's job.
+run_command() is also used by doctor.py for its checks. Reading the version
+number out of the output is versions.py's job.
 """
 
 import glob
@@ -43,12 +44,29 @@ _VARIABLE_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_()]*)%|\$\{([A-Za-z_][A-Za-z0-
 
 
 class Problem(StrEnum):
-    """What went wrong while detecting a tool, if anything."""
+    """What went wrong while finding or running a program, if anything."""
 
     NOT_FOUND = "not_found"  # no program with any of the names was found
-    TIMEOUT = "timeout"  # the version command ran past the time limit
+    TIMEOUT = "timeout"  # the command ran past the time limit
     START_FAILED = "start_failed"  # the program was found but could not be started
-    EXIT_STATUS = "exit_status"  # the version command exited with a non-zero code
+    EXIT_STATUS = "exit_status"  # the command exited with a non-zero code
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    """What happened when one command was run."""
+
+    command: tuple[str, ...]
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int | None = None  # None when the command never finished
+    problem: Problem | None = None
+    error: str | None = None  # a sentence for people, set whenever problem is set
+
+    @property
+    def output(self) -> str:
+        """stdout and stderr together. Some tools print to stderr."""
+        return "\n".join(part for part in (self.stdout, self.stderr) if part)
 
 
 @dataclass(frozen=True)
@@ -65,6 +83,7 @@ class DetectResult:
     problem: Problem | None = None
     error: str | None = None  # a sentence for people, set whenever problem is set
     searched: tuple[str, ...] = ()  # extra folders that were searched before PATH
+    found_in_folder: str | None = None  # the extra folder it was found in; None = on PATH
 
     @property
     def output(self) -> str:
@@ -92,11 +111,10 @@ def detect_tool(
     env = os.environ if env is None else env
     home = str(Path.home()) if home is None else home
     which = which or shutil.which
-    runner = runner or subprocess.run
 
     directories = candidate_directories(tool, system, env=env, home=home)
-    path = find_executable(tool.executables, directories, which)
-    if path is None:
+    located = find_executable(tool.executables, directories, which)
+    if located is None:
         names = " / ".join(tool.executables)
         also = f" or in {', '.join(directories)}" if directories else ""
         return DetectResult(
@@ -107,57 +125,87 @@ def detect_tool(
             searched=directories,
         )
 
-    command = (path, *tool.version.args)
+    path, folder = located
+    result = run_command((path, *tool.version.args), runner=runner, timeout=timeout)
+    return DetectResult(
+        tool_key=tool.key,
+        found=True,
+        path=path,
+        command=result.command,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        exit_code=result.exit_code,
+        problem=result.problem,
+        error=result.error,
+        searched=directories,
+        found_in_folder=folder,
+    )
+
+
+def run_command(
+    command: Sequence[str],
+    *,
+    runner: Runner | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    cwd: str | None = None,
+) -> CommandResult:
+    """Run one command safely and report what happened. Never raises for
+    timeouts, programs that cannot start, or non-zero exit codes.
+
+    The command is a list of arguments, never a shell string. stdin is
+    closed so a program waiting for input fails instead of hanging, and
+    ``timeout`` (seconds) stops programs that never finish.
+    """
+    runner = runner or subprocess.run
+    command = tuple(command)
+    shown = show_command(command)
+    options: dict[str, object] = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",  # odd bytes in the output must not crash us
+        "stdin": subprocess.DEVNULL,
+        "timeout": timeout,
+        "check": False,
+    }
+    if cwd is not None:
+        options["cwd"] = cwd
     try:
-        completed = runner(
-            list(command),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",  # odd bytes in the output must not crash us
-            stdin=subprocess.DEVNULL,  # a tool waiting for input must not hang us
-            timeout=timeout,
-            check=False,
-        )
+        completed = runner(list(command), **options)
     except subprocess.TimeoutExpired as exc:
-        return DetectResult(
-            tool_key=tool.key,
-            found=True,
-            path=path,
+        return CommandResult(
             command=command,
             stdout=_as_text(exc.stdout),
             stderr=_as_text(exc.stderr),
             problem=Problem.TIMEOUT,
-            error=f"the version command did not finish within {timeout:g} seconds",
-            searched=directories,
+            error=f"`{shown}` did not finish within {timeout:g} seconds",
         )
     except OSError as exc:
-        return DetectResult(
-            tool_key=tool.key,
-            found=True,
-            path=path,
+        return CommandResult(
             command=command,
             problem=Problem.START_FAILED,
-            error=f"found, but could not be started: {exc}",
-            searched=directories,
+            error=f"`{shown}` could not be started: {exc}",
         )
 
     problem = error = None
     if completed.returncode != 0:
         problem = Problem.EXIT_STATUS
-        error = f"the version command exited with code {completed.returncode}"
-    return DetectResult(
-        tool_key=tool.key,
-        found=True,
-        path=path,
+        error = f"`{shown}` exited with code {completed.returncode}"
+    return CommandResult(
         command=command,
         stdout=completed.stdout or "",
         stderr=completed.stderr or "",
         exit_code=completed.returncode,
         problem=problem,
         error=error,
-        searched=directories,
     )
+
+
+def show_command(command: Sequence[str]) -> str:
+    """A short form of a command for messages: the program's file name
+    without its folder, then the arguments, e.g. "ghdl -a t.vhdl"."""
+    program = re.split(r"[\\/]", command[0])[-1] if command else ""
+    return " ".join([program, *command[1:]])
 
 
 def candidate_directories(
@@ -192,23 +240,24 @@ def find_executable(
     names: Sequence[str],
     directories: Sequence[str],
     which: Which,
-) -> str | None:
-    """Return the first program found, or None.
+) -> tuple[str, str | None] | None:
+    """Return (program path, extra folder it was in), or None if not found.
 
-    Folder by folder, every name is tried before the next folder. So with
-    names ("ngspice_con", "ngspice"), eSim's own ngspice.exe in the first
-    folder wins over an ngspice_con.exe in a later folder. PATH is searched
-    last, again in name order. ``which`` adds ".exe" etc. on Windows.
+    The folder is None when the program was found on PATH. Folder by
+    folder, every name is tried before the next folder. So with names
+    ("ngspice_con", "ngspice"), eSim's own ngspice.exe in the first folder
+    wins over an ngspice_con.exe in a later folder. PATH is searched last,
+    again in name order. ``which`` adds ".exe" etc. on Windows.
     """
     for directory in directories:
         for name in names:
             found = which(name, path=directory)
             if found:
-                return found
+                return found, directory
     for name in names:
         found = which(name)
         if found:
-            return found
+            return found, None
     return None
 
 

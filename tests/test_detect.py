@@ -18,6 +18,8 @@ from esim_toolman.detect import (
     detect_tool,
     expand_search_path,
     find_executable,
+    run_command,
+    show_command,
 )
 from esim_toolman.manifest import SearchPaths, Tool, VersionSpec
 
@@ -161,19 +163,25 @@ def test_folder_order_beats_name_order() -> None:
             ("second", "ngspice_con"): "second/ngspice_con.exe",
         },
     )
-    assert find_executable(("ngspice_con", "ngspice"), ("first", "second"), which) == "first/ngspice.exe"
+    found = find_executable(("ngspice_con", "ngspice"), ("first", "second"), which)
+    assert found == ("first/ngspice.exe", "first")
 
 
 def test_name_order_within_one_folder() -> None:
     which = FakeWhich(
         in_dirs={("bin", "ngspice_con"): "bin/ngspice_con.exe", ("bin", "ngspice"): "bin/ngspice.exe"}
     )
-    assert find_executable(("ngspice_con", "ngspice"), ("bin",), which) == "bin/ngspice_con.exe"
+    assert find_executable(("ngspice_con", "ngspice"), ("bin",), which) == ("bin/ngspice_con.exe", "bin")
 
 
 def test_path_is_searched_after_the_extra_folders() -> None:
     which = FakeWhich(on_path={"demo": "/usr/bin/demo"})
-    assert find_executable(("demo",), ("empty-folder",), which) == "/usr/bin/demo"
+    # None as the folder means "found on PATH".
+    assert find_executable(("demo",), ("empty-folder",), which) == ("/usr/bin/demo", None)
+
+
+def test_nothing_found() -> None:
+    assert find_executable(("demo",), ("empty-folder",), FakeWhich()) is None
 
 
 def test_extra_folder_is_used_before_path(tmp_path: Path) -> None:
@@ -189,6 +197,44 @@ def test_extra_folder_is_used_before_path(tmp_path: Path) -> None:
     )
     assert result.path == f"{folder}/demo"
     assert result.searched == (folder,)
+    assert result.found_in_folder == folder
+
+
+def test_found_on_path_has_no_folder() -> None:
+    runner = FakeRunner(stdout="demo 1.0\n")
+    result = detect(make_tool(), FakeWhich(on_path={"demo": "/usr/bin/demo"}), runner)
+    assert result.found_in_folder is None
+
+
+# ------------------------------------------------------------- run_command
+
+
+def test_run_command_passes_the_working_folder() -> None:
+    runner = FakeRunner(stdout="ok\n")
+    result = run_command(["/bin/demo", "-a", "t.vhdl"], runner=runner, timeout=3, cwd="/tmp/x")
+    (args, kwargs) = runner.calls[0]
+    assert args == ["/bin/demo", "-a", "t.vhdl"]
+    assert kwargs["cwd"] == "/tmp/x"
+    assert kwargs["timeout"] == 3
+    assert result.problem is None and result.output == "ok\n"
+
+
+def test_run_command_without_cwd_does_not_set_it() -> None:
+    runner = FakeRunner()
+    run_command(["/bin/demo"], runner=runner)
+    assert "cwd" not in runner.calls[0][1]
+
+
+@pytest.mark.parametrize(
+    ("command", "shown"),
+    [
+        (("/usr/bin/ghdl", "-a", "t.vhdl"), "ghdl -a t.vhdl"),
+        ((r"C:\FOSSEE\eSim\tools\ngspice.exe", "--version"), "ngspice.exe --version"),
+        (("demo",), "demo"),
+    ],
+)
+def test_show_command_drops_the_folder(command: tuple[str, ...], shown: str) -> None:
+    assert show_command(command) == shown
 
 
 # ------------------------------------------------- running the version command
