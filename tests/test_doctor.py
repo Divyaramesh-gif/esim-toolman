@@ -19,6 +19,7 @@ from captured import UBUNTU_2404, all_runs, load
 from esim_toolman.doctor import (
     Finding,
     Severity,
+    drop_repeated_notes,
     grouped,
     order_findings,
     run_doctor,
@@ -516,7 +517,10 @@ def test_conflicting_package_installed_is_an_error() -> None:
     finding = one(doctor(machine, manifest=GHDL_ONLY), "ghdl", "apt_conflict")
     assert finding.severity is Severity.ERROR
     assert "ghdl-mcode is installed" in finding.problem
-    assert finding.fix == "sudo apt-get purge ghdl-mcode"
+    assert finding.fix is not None
+    command, note = finding.fix.splitlines()
+    assert command == "sudo apt-get purge ghdl-mcode"
+    assert note.startswith("Note: Never install the 'ghdl' meta-package")
 
 
 @pytest.mark.parametrize(
@@ -682,6 +686,10 @@ def test_replay_of_the_real_ubuntu_2404_machine() -> None:
     assert "kicad-footprints, kicad-libraries, kicad-symbols, kicad-templates" in libraries.problem
     assert libraries.fix == "sudo apt-get install kicad-footprints kicad-libraries kicad-symbols kicad-templates"
 
+    # Follow-up: KiCad's note was printed twice (once per warning). Now once.
+    kicad_text = "\n".join(f.problem + "\n" + (f.fix or "") for f in for_tool(findings, "kicad"))
+    assert kicad_text.count("Newer KiCad for Ubuntu comes from the KiCad PPA") == 1
+
     # Everything else that was fine there.
     for key in ("ngspice", "ghdl", "verilator", "iverilog"):
         assert one(findings, key, "apt_packages").severity is Severity.OK
@@ -725,6 +733,24 @@ def test_errors_come_first_inside_a_group() -> None:
         ("a", Severity.OK),
         (None, Severity.WARNING),  # stable: Platform stays before b
         ("b", Severity.WARNING),
+    ]
+
+
+def test_each_note_is_shown_once_per_tool() -> None:
+    findings = [
+        Finding("a", "A", Severity.WARNING, "x", "old", fix="upgrade a\nNote: about a."),
+        Finding("a", "A", Severity.WARNING, "y", "missing", fix="install a-libs\nNote: about a."),
+        Finding("a", "A", Severity.WARNING, "z", "only a note", fix="Note: about a."),
+        Finding("b", "B", Severity.WARNING, "x", "old", fix="upgrade b\nNote: about a."),
+        Finding("a", "A", Severity.OK, "w", "fine"),
+    ]
+    fixes = [f.fix for f in drop_repeated_notes(findings)]
+    assert fixes == [
+        "upgrade a\nNote: about a.",  # first time for tool a: kept
+        "install a-libs",  # repeated for a: dropped
+        None,  # nothing left
+        "upgrade b\nNote: about a.",  # another tool: kept
+        None,  # had no fix
     ]
 
 

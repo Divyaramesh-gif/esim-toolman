@@ -17,6 +17,7 @@ Severity rules:
   OK       checked and fine
 """
 
+import dataclasses
 import itertools
 import os
 import re
@@ -151,7 +152,7 @@ def run_doctor(
     findings = platform_findings(manifest, info)
     for tool in manifest.tools.values():
         findings += tool_findings(tool, ctx)
-    return order_findings(findings)
+    return drop_repeated_notes(order_findings(findings))
 
 
 def order_findings(findings: Sequence[Finding]) -> list[Finding]:
@@ -166,6 +167,31 @@ def order_findings(findings: Sequence[Finding]) -> list[Finding]:
         groups.setdefault(finding.tool, []).append(finding)
     ordered = sorted(groups.values(), key=lambda group: min(_RANK[f.severity] for f in group))
     return [f for group in ordered for f in sorted(group, key=lambda f: _RANK[f.severity])]
+
+
+def drop_repeated_notes(findings: Sequence[Finding]) -> list[Finding]:
+    """Show each "Note: ..." line once per tool.
+
+    The manifest's notes are added to every fix that uses its apt or winget
+    section, so one tool can collect the same note several times (KiCad's
+    upgrade fix and its missing-packages fix both did). Going through the
+    findings in display order, a note line already shown for the same tool
+    is removed from later fixes.
+    """
+    seen: set[tuple[str | None, str]] = set()
+    result: list[Finding] = []
+    for finding in findings:
+        if finding.fix is not None:
+            kept: list[str] = []
+            for line in finding.fix.splitlines():
+                if line.startswith("Note: "):
+                    if (finding.tool, line) in seen:
+                        continue
+                    seen.add((finding.tool, line))
+                kept.append(line)
+            finding = dataclasses.replace(finding, fix="\n".join(kept) or None)
+        result.append(finding)
+    return result
 
 
 def summarize(findings: Sequence[Finding]) -> dict[str, int]:
@@ -480,13 +506,12 @@ def _apt_packages(tool: Tool, path: str | None, ctx: _Context) -> list[Finding]:
                 f"Its fallback apt packages are installed: {', '.join(tool.apt.fallback)}.",
             )
         ]
-    note = f" {_sentence(tool.apt.note)}" if tool.apt.note else ""
     return [
         Finding(
             tool.key, tool.name, Severity.WARNING, "apt_packages",
             f"These apt packages for {tool.name} are not installed: {', '.join(missing)}. "
-            f"eSim installs them together with {tool.name}.{note}",
-            fix=f"sudo apt-get install {' '.join(missing)}",
+            f"eSim installs them together with {tool.name}.",
+            fix=_with_note(f"sudo apt-get install {' '.join(missing)}", tool.apt.note),
         )
     ]
 
@@ -519,12 +544,11 @@ def _apt_conflicts(tool: Tool, ctx: _Context) -> list[Finding]:
                 )
             )
         elif installed:
-            note = f" {_sentence(tool.apt.note)}" if tool.apt.note else ""
             findings.append(
                 Finding(
                     tool.key, tool.name, Severity.ERROR, "apt_conflict",
-                    f"The apt package {package} is installed, and it conflicts with {tool.name}.{note}",
-                    tool.needed_for, f"sudo apt-get purge {package}",
+                    f"The apt package {package} is installed, and it conflicts with {tool.name}.",
+                    tool.needed_for, _with_note(f"sudo apt-get purge {package}", tool.apt.note),
                 )
             )
         else:
@@ -566,13 +590,11 @@ def _upgrade_fix(tool: Tool, target: str | None, ctx: _Context) -> str:
         package = tool.apt.packages[0]
         candidate = _apt_candidate(package, ctx)
         if candidate is not None and compare_versions(candidate, target) < 0:
-            lines = [
+            return _with_note(
                 f"apt cannot reach {target}: the newest {package} it offers is {candidate} "
-                f"(see `apt-cache policy {package}`)."
-            ]
-            if tool.apt.note:
-                lines.append(f"Note: {_sentence(tool.apt.note)}")
-            return "\n".join(lines)
+                f"(see `apt-cache policy {package}`).",
+                tool.apt.note,
+            )
     return install_fix(tool, ctx.info, upgrade=True)
 
 
@@ -595,9 +617,7 @@ def install_fix(tool: Tool, info: PlatformInfo, *, upgrade: bool = False) -> str
             lines = [f"sudo apt-get install {packages}"]
         if apt.fallback:
             lines.append(f"If that fails: sudo apt-get install {' '.join(apt.fallback)}")
-        if apt.note:
-            lines.append(f"Note: {_sentence(apt.note)}")
-        return "\n".join(lines)
+        return _with_note("\n".join(lines), apt.note)
 
     if info.system == "windows":
         winget = tool.winget
@@ -612,9 +632,7 @@ def install_fix(tool: Tool, info: PlatformInfo, *, upgrade: bool = False) -> str
             if winget.version:
                 command += f" --version {winget.version}"
             lines = [command]
-        if winget.note:
-            lines.append(f"Note: {_sentence(winget.note)}")
-        return "\n".join(lines)
+        return _with_note("\n".join(lines), winget.note)
 
     return f"Install {tool.name} by hand; esim-toolman has no package manager for {info.system}."
 
@@ -655,6 +673,12 @@ def _is_inside(path: str, folder: str) -> bool:
     path = os.path.normcase(os.path.normpath(path))
     folder = os.path.normcase(os.path.normpath(folder))
     return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def _with_note(fix: str, note: str | None) -> str:
+    """A fix, followed by a "Note: ..." line when the manifest has a note.
+    Every note goes through here, so drop_repeated_notes can find them."""
+    return f"{fix}\nNote: {_sentence(note)}" if note else fix
 
 
 def _sentence(text: str) -> str:
