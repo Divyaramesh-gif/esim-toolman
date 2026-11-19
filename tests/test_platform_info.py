@@ -6,6 +6,8 @@ faked, so these tests give the same result on any machine.
 
 from pathlib import Path
 
+from captured import UBUNTU_2404 as CAPTURED_UBUNTU_2404
+
 from esim_toolman.platform_info import (
     check_ubuntu_version,
     detect_platform,
@@ -60,6 +62,19 @@ def test_supported_ubuntu_has_no_warning(tmp_path: Path) -> None:
     assert info.package_managers == ("apt-get",)
     assert info.warnings == ()
     assert info.describe() == "Linux (Ubuntu 24.04.1 LTS)"
+
+
+def test_real_ubuntu_2404_os_release() -> None:
+    # /etc/os-release copied from the WSL Ubuntu 24.04 machine.
+    info = detect_platform(
+        SUPPORTED,
+        system="Linux",
+        os_release_paths=[CAPTURED_UBUNTU_2404 / "os-release"],
+        which=only("apt-get"),
+    )
+    assert (info.distro_id, info.distro_version) == ("ubuntu", "24.04")
+    assert info.distro_name == "Ubuntu 24.04.5 LTS"
+    assert info.warnings == ()
 
 
 def test_untested_ubuntu_gives_a_warning_not_an_error(tmp_path: Path) -> None:

@@ -1,0 +1,10 @@
+{
+  "command": [
+    "/usr/bin/ghdl",
+    "-a",
+    "t.vhdl"
+  ],
+  "exit_code": 3,
+  "stdout": "",
+  "stderr": "/usr/lib/ghdl/llvm/ghdl1-llvm: error while loading shared libraries: libLLVM-18.so.18.1: cannot open shared object file: No such file or directory\n/usr/bin/ghdl-llvm:error: exec error\n"
+}

@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/usr/bin/apt-cache",
+    "policy",
+    "ngspice"
+  ],
+  "exit_code": 0,
+  "stdout": "ngspice:\n  Installed: 42+ds-3build1\n  Candidate: 42+ds-3build1\n  Version table:\n *** 42+ds-3build1 500\n        500 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages\n        100 /var/lib/dpkg/status\n",
+  "stderr": "",
+  "env": {
+    "LC_ALL": "C"
+  }
+}

@@ -3,7 +3,8 @@
 FakeMachine stands in for shutil.which, subprocess.run and os.path.realpath,
 so nothing here depends on what this computer has installed. Most tests use
 a small made-up manifest (tools "sim" and "vhd"); the GHDL tests use the real
-GHDL entry from manifest/tools.toml.
+GHDL entry from manifest/tools.toml, and real outputs captured on Ubuntu
+24.04 (tests/fixtures/ubuntu-24.04/) wherever they exist.
 """
 
 import subprocess
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from captured import UBUNTU_2404, all_runs, load
 
 from esim_toolman.doctor import (
     Finding,
@@ -24,7 +26,7 @@ from esim_toolman.doctor import (
     summary_line,
 )
 from esim_toolman.manifest import Manifest, load_manifest, parse_manifest
-from esim_toolman.platform_info import PlatformInfo
+from esim_toolman.platform_info import PlatformInfo, detect_platform
 
 TEST_TOML = r'''
 schema_version = 1
@@ -105,25 +107,34 @@ UBUNTU = PlatformInfo(
 )
 WINDOWS = PlatformInfo(system="windows", package_managers=("winget",))
 
-DPKG_GHDL_MCODE = ("dpkg-query", "-W", "--showformat=${Status}", "ghdl-mcode")
-DPKG_VHD_MCODE = ("dpkg-query", "-W", "--showformat=${Status}", "vhd-mcode")
+def dpkg(package: str) -> tuple[str, ...]:
+    """The key of a `dpkg-query` status call in FakeMachine.responses."""
+    return ("dpkg-query", "-W", "--showformat=${Status}", package)
 
-# What `ghdl --version` prints with each backend (shape from
-# GHDL-BACKEND-26.04.md: the backend is named on a later line).
-GHDL_LLVM = (
-    "GHDL 4.1.0 (Ubuntu 4.1.0+dfsg-0ubuntu2.1) [Dunoon edition]\n"
-    " Compiled with GNAT Version: 13.2.0\n"
-    " llvm 18.1.3 code generator\n"
-)
+
+def apt_cache(package: str) -> tuple[str, ...]:
+    """The key of an `apt-cache policy` call in FakeMachine.responses."""
+    return ("apt-cache", "policy", package)
+
+
+DPKG_GHDL_MCODE = dpkg("ghdl-mcode")
+DPKG_VHD_MCODE = dpkg("vhd-mcode")
+
+# Real `ghdl --version` output from Ubuntu 24.04 (llvm backend).
+GHDL_LLVM = load("ghdl-version")["stdout"]
+# No machine with the mcode backend was available, so this one is made up,
+# following GHDL-BACKEND-26.04.md: the backend is named on a later line.
 GHDL_MCODE = (
     "GHDL 5.0.1 (Ubuntu 5.0.1+dfsg-1ubuntu1) [Dunoon edition]\n"
     " Compiled with GNAT Version: 14.2.0\n"
     " mcode JIT code generator\n"
 )
 
-# A response is (stdout, exit code), an exception to raise, or a function
-# that gets the working folder and returns (stdout, exit code).
-Response = tuple[str, int] | BaseException | Callable[[str | None], tuple[str, int]]
+# A response is (stdout, exit code), a captured real run (a dict from
+# tests/fixtures), an exception to raise, or a function that gets the working
+# folder and returns one of the first two.
+Answer = tuple[str, int] | dict[str, Any]
+Response = Answer | BaseException | Callable[[str | None], Answer]
 
 
 class FakeMachine:
@@ -154,6 +165,10 @@ class FakeMachine:
             raise response
         if callable(response):
             response = response(kwargs.get("cwd"))
+        if isinstance(response, dict):  # a captured real run
+            return subprocess.CompletedProcess(
+                args, response["exit_code"], response["stdout"], response["stderr"]
+            )
         stdout, returncode = response
         return subprocess.CompletedProcess(args, returncode, stdout, "")
 
@@ -195,13 +210,27 @@ def one(findings: list[Finding], key: str | None, check: str) -> Finding:
 
 
 def ghdl_machine(version_output: str) -> FakeMachine:
-    """GHDL installed and working, with ghdl-mcode not installed."""
+    """GHDL installed and compiling fine; ghdl-llvm installed and
+    ghdl-mcode not (both dpkg answers are real, from Ubuntu 24.04)."""
     machine = FakeMachine()
     machine.install("ghdl", version_output)
     machine.on_path["dpkg-query"] = "/usr/bin/dpkg-query"
-    machine.responses[DPKG_GHDL_MCODE] = ("", 1)  # dpkg-query: no such package
+    machine.responses[DPKG_GHDL_MCODE] = load("dpkg-query-ghdl-mcode")  # exit 1: unknown
+    machine.responses[dpkg("ghdl-llvm")] = load("dpkg-query-ghdl-llvm")  # installed
     machine.responses[("ghdl", "-a", "t.vhdl")] = ("", 0)
     machine.responses[("ghdl", "-e", "t")] = ("", 0)
+    return machine
+
+
+def ubuntu_2404_machine() -> FakeMachine:
+    """The WSL Ubuntu 24.04 machine, replayed from its captured outputs:
+    every captured program is on PATH and answers exactly as it did there."""
+    machine = FakeMachine()
+    for run in all_runs():
+        program = run["command"][0]
+        name = program_name(program)
+        machine.on_path[name] = program
+        machine.responses[(name, *run["command"][1:])] = run
     return machine
 
 
@@ -419,19 +448,16 @@ def test_ghdl_with_a_working_llvm_backend_passes_every_check() -> None:
 
 
 def test_ghdl_installs_but_cannot_compile() -> None:
-    # Ubuntu 24.04's ghdl-llvm: --version works, compiling fails.
+    # Ubuntu 24.04's ghdl-llvm: --version works, compiling fails. The failure
+    # is the real one captured there (exit code 3, message on stderr).
     machine = ghdl_machine(GHDL_LLVM)
     seen: dict[str, str] = {}
 
-    def broken_backend(cwd: str | None) -> tuple[str, int]:
+    def broken_backend(cwd: str | None) -> dict[str, Any]:
         assert cwd is not None
         seen["cwd"] = cwd
         seen["file"] = (Path(cwd) / "t.vhdl").read_text(encoding="utf-8")
-        return (
-            "/usr/lib/ghdl/llvm/ghdl1-llvm: error while loading shared libraries: "
-            "libLLVM-18.so.18.1: cannot open shared object file\n",
-            1,
-        )
+        return load("ghdl-analyze")
 
     machine.responses[("ghdl", "-a", "t.vhdl")] = broken_backend
     findings = doctor(machine, manifest=GHDL_ONLY, compile_timeout=9)
@@ -439,8 +465,8 @@ def test_ghdl_installs_but_cannot_compile() -> None:
     finding = one(findings, "ghdl", "compile_test")
     assert finding.severity is Severity.ERROR
     assert "cannot compile VHDL" in finding.problem
-    assert "`ghdl -a t.vhdl` exited with code 1" in finding.problem
-    assert "libLLVM-18.so.18.1" in finding.problem  # an excerpt of the output
+    assert "`ghdl -a t.vhdl` exited with code 3" in finding.problem
+    assert "libLLVM-18.so.18.1" in finding.problem  # an excerpt of stderr
     assert finding.breaks == ("vhdl-cosim",)
     assert finding.fix is not None
     assert finding.fix.splitlines() == [
@@ -525,7 +551,145 @@ def test_no_apt_checks_on_windows() -> None:
     machine = ghdl_machine(GHDL_LLVM)
     findings = doctor(machine, WINDOWS, manifest=GHDL_ONLY)
     assert for_tool(findings, "ghdl", "apt_conflict") == []
+    assert for_tool(findings, "ghdl", "apt_packages") == []
     assert not any(key[0] == "dpkg-query" for key, _ in machine.calls)
+
+
+# ------------------------------------------------------------- apt packages
+
+
+def vhd_machine(installed: set[str]) -> FakeMachine:
+    """vhd 1.0.0 on PATH; dpkg says exactly the packages in ``installed`` are
+    installed (the others answer "unknown ok not-installed", as on Ubuntu)."""
+    machine = FakeMachine()
+    machine.install("vhd", "VHD 1.0.0\n")
+    machine.on_path["dpkg-query"] = "/usr/bin/dpkg-query"
+    for package in ("vhd-llvm", "vhd-gcc", "vhd-mcode"):
+        status = "install ok installed" if package in installed else "unknown ok not-installed"
+        machine.responses[dpkg(package)] = (status, 0)
+    return machine
+
+
+@pytest.mark.parametrize(
+    ("installed", "severity"),
+    [
+        ({"vhd-llvm"}, Severity.OK),  # the main packages
+        ({"vhd-gcc"}, Severity.OK),  # the fallback instead
+        (set(), Severity.WARNING),  # neither
+    ],
+)
+def test_apt_packages(installed: set[str], severity: Severity) -> None:
+    finding = one(doctor(vhd_machine(installed)), "vhd", "apt_packages")
+    assert finding.severity is severity
+    if severity is Severity.WARNING:
+        assert "not installed: vhd-llvm" in finding.problem
+        assert finding.fix == "sudo apt-get install vhd-llvm"
+
+
+def test_apt_packages_skipped_for_esims_own_build() -> None:
+    # eSim's own build is not an apt package, so its absence from dpkg is fine.
+    machine = FakeMachine()
+    machine.install("sim", "sim-45.2\n")
+    machine.on_path["dpkg-query"] = "/usr/bin/dpkg-query"
+    machine.responses[DPKG_VHD_MCODE] = ("", 1)  # for the (missing) vhd tool's conflict check
+    machine.real_paths["/usr/bin/sim"] = "/home/me/own/install_dir/bin/sim"
+    findings = doctor(machine)
+    assert for_tool(findings, "sim", "apt_packages") == []
+    assert not machine.ran(*dpkg("sim"))
+
+
+# ------------------------------------------------------ apt upgrade advice
+
+
+def sim_machine_below_recommended(policy: str) -> FakeMachine:
+    """sim 44 installed (eSim recommends 45.2); apt-cache policy says ``policy``."""
+    machine = FakeMachine()
+    machine.install("sim", "sim-44\n")
+    machine.on_path["apt-cache"] = "/usr/bin/apt-cache"
+    machine.responses[apt_cache("sim")] = (policy, 0)
+    return machine
+
+
+def test_upgrade_fix_says_when_apt_cannot_reach_the_version() -> None:
+    machine = sim_machine_below_recommended("sim:\n  Installed: 44-1\n  Candidate: 44-1\n")
+    finding = one(doctor(machine), "sim", "installed")
+    assert finding.fix == "apt cannot reach 45.2: the newest sim it offers is 44 (see `apt-cache policy sim`)."
+    # apt-cache ran in English, so "Candidate:" could be found.
+    options = next(options for key, options in machine.calls if key == apt_cache("sim"))
+    assert options["env"]["LC_ALL"] == "C"
+
+
+def test_upgrade_fix_uses_apt_when_apt_has_a_new_enough_version() -> None:
+    # "1:" is a Debian epoch; it is not part of the upstream version.
+    machine = sim_machine_below_recommended("sim:\n  Installed: 44-1\n  Candidate: 1:46.0-1\n")
+    finding = one(doctor(machine), "sim", "installed")
+    assert finding.fix == "sudo apt-get update && sudo apt-get install --only-upgrade sim"
+
+
+def test_upgrade_fix_falls_back_to_apt_when_apt_cache_does_not_say() -> None:
+    machine = sim_machine_below_recommended("sim:\n  Installed: 44-1\n  Candidate: (none)\n")
+    finding = one(doctor(machine), "sim", "installed")
+    assert finding.fix == "sudo apt-get update && sudo apt-get install --only-upgrade sim"
+
+
+# ------------------------------------- the real Ubuntu 24.04 machine, replayed
+
+
+def test_replay_of_the_real_ubuntu_2404_machine() -> None:
+    """Every command the doctor runs answers exactly as it did on the WSL
+    Ubuntu 24.04 machine. The bugs this real run exposed stay fixed."""
+    manifest = load_manifest()
+    info = detect_platform(
+        manifest.ubuntu_supported_versions,
+        system="Linux",
+        os_release_paths=[UBUNTU_2404 / "os-release"],
+        which=lambda name: "/usr/bin/apt-get" if name == "apt-get" else None,
+    )
+    findings = doctor(ubuntu_2404_machine(), info, manifest=manifest)
+
+    # Right the first time: GHDL's llvm backend cannot compile on 24.04.
+    compile_test = one(findings, "ghdl", "compile_test")
+    assert compile_test.severity is Severity.ERROR
+    assert "exited with code 3" in compile_test.problem
+    assert "libLLVM-18.so.18.1" in compile_test.problem
+    assert one(findings, "ghdl", "output_excludes").severity is Severity.OK
+
+    # Bug 1: apt's iverilog has no libvvp, so d_cosim cannot work.
+    icarus = one(findings, "iverilog", "own_build")
+    assert icarus.severity is Severity.WARNING
+    assert icarus.breaks == ("verilog-cosim",)
+
+    # Bug 2: apt's ngspice has no ivlng either, so d_cosim is broken too.
+    ngspice = one(findings, "ngspice", "own_build")
+    assert ngspice.breaks == ("vhdl-cosim", "verilog-models", "verilog-cosim")
+
+    # Bug 3: apt has nothing newer, so no useless upgrade command.
+    kicad = one(findings, "kicad", "installed")
+    assert kicad.severity is Severity.WARNING
+    assert kicad.fix is not None
+    assert kicad.fix.startswith("apt cannot reach 9: the newest kicad it offers is 7.0.11")
+    assert "--only-upgrade" not in kicad.fix
+    ngspice_version = one(findings, "ngspice", "installed")
+    assert ngspice_version.fix is not None
+    assert ngspice_version.fix.startswith("apt cannot reach 45.2: the newest ngspice it offers is 42")
+
+    # Bug 4: no note for developers in what users read.
+    assert not any("not written" in f.problem + (f.fix or "") for f in findings)
+
+    # Bug 5: KiCad's library packages were not installed.
+    libraries = one(findings, "kicad", "apt_packages")
+    assert libraries.severity is Severity.WARNING
+    assert "kicad-footprints, kicad-libraries, kicad-symbols, kicad-templates" in libraries.problem
+    assert libraries.fix == "sudo apt-get install kicad-footprints kicad-libraries kicad-symbols kicad-templates"
+
+    # Everything else that was fine there.
+    for key in ("ngspice", "ghdl", "verilator", "iverilog"):
+        assert one(findings, key, "apt_packages").severity is Severity.OK
+    assert one(findings, "verilator", "installed").severity is Severity.OK
+    assert one(findings, "iverilog", "installed").severity is Severity.OK
+    assert one(findings, None, "platform").severity is Severity.OK
+    assert summarize(findings)["errors"] == 1
+    assert summarize(findings)["warnings"] == 5
 
 
 # --------------------------------------------------------------- read-only

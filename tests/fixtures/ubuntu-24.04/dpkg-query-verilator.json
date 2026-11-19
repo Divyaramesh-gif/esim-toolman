@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/usr/bin/dpkg-query",
+    "-W",
+    "--showformat=${Status}",
+    "verilator"
+  ],
+  "exit_code": 0,
+  "stdout": "install ok installed",
+  "stderr": ""
+}

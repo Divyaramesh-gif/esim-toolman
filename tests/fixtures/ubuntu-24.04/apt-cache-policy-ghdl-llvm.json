@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/usr/bin/apt-cache",
+    "policy",
+    "ghdl-llvm"
+  ],
+  "exit_code": 0,
+  "stdout": "ghdl-llvm:\n  Installed: 4.1.0+dfsg-0ubuntu2.1\n  Candidate: 4.1.0+dfsg-0ubuntu2.1\n  Version table:\n *** 4.1.0+dfsg-0ubuntu2.1 500\n        500 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages\n        500 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages\n        100 /var/lib/dpkg/status\n     4.1.0+dfsg-0ubuntu2 500\n        500 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages\n",
+  "stderr": "",
+  "env": {
+    "LC_ALL": "C"
+  }
+}

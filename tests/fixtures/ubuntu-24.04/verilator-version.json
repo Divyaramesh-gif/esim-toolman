@@ -1,0 +1,9 @@
+{
+  "command": [
+    "/usr/bin/verilator",
+    "--version"
+  ],
+  "exit_code": 0,
+  "stdout": "Verilator 5.020 2024-01-01 rev (Debian 5.020-1)\n",
+  "stderr": ""
+}

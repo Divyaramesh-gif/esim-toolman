@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/usr/bin/dpkg-query",
+    "-W",
+    "--showformat=${Status}",
+    "kicad"
+  ],
+  "exit_code": 0,
+  "stdout": "install ok installed",
+  "stderr": ""
+}

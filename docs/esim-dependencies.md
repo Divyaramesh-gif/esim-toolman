@@ -118,18 +118,19 @@ I also searched `src/` to see which Python packages eSim actually imports.
 ## Detection details (checked for esim-toolman)
 
 Checked on 2026-11-17 on Windows 11 with winget v1.29.380. None of the five tools is installed
-on this machine, so the version commands below were **not run**. Each output format comes from the
-evidence named in its row.
+on that machine, so the version commands were not run there. On 2026-11-20 they were run for real
+on Ubuntu 24.04; see [Tested on](#tested-on). Each output format comes from the evidence named in
+its row.
 
 ### Version output formats
 
 | Tool | Command | Output looks like | Evidence |
 |---|---|---|---|
-| ngspice | `ngspice --version` | `** ngspice-45.2 : Circuit level simulation program` | The format string `"** %s-%s : %s\n"` in ngspice's `src/frontend/misccoms.c` (lines 187–199, inside `nghdl/nghdl-simulator-source.tar.xz`) |
+| ngspice | `ngspice --version` | `** ngspice-45.2 : Circuit level simulation program` | The format string `"** %s-%s : %s\n"` in ngspice's `src/frontend/misccoms.c` (lines 187–199, inside `nghdl/nghdl-simulator-source.tar.xz`). Confirmed on Ubuntu 24.04: `** ngspice-42 : Circuit level simulation program` |
 | KiCad | `kicad-cli version` | `9.0.3` | eSim's own build checks that this output contains the KiCad version from its manifest (`build-windows.ps1:936-938`). `kicad-cli` was added in KiCad 7 (general knowledge), so it is missing on KiCad 6 and older |
-| GHDL | `ghdl --version` | First line `GHDL 4.1.0 (...)`. A later line names the backend (llvm, gcc or mcode) | Backend line: `GHDL-BACKEND-26.04.md:81`. First-line format: general knowledge |
-| Verilator | `verilator --version` | `Verilator 5.020 2024-01-01 ...` (`5.020` means 5.20) | General knowledge |
-| Icarus Verilog | `iverilog -V` | Printed to stdout: `Icarus Verilog version 12.0 (stable) (v12_0)`. **Exit code 0** | Source of `driver/main.c` at eSim's pinned commit (see below) |
+| GHDL | `ghdl --version` | First line `GHDL 4.1.0 (...)`. A later line names the backend (llvm, gcc or mcode) | Backend line: `GHDL-BACKEND-26.04.md:81`. Both confirmed on Ubuntu 24.04 (third line ` llvm 18.1.8 code generator`) |
+| Verilator | `verilator --version` | `Verilator 5.020 2024-01-01 rev (Debian 5.020-1)` (`5.020` means 5.20) | Confirmed on Ubuntu 24.04 |
+| Icarus Verilog | `iverilog -V` | Printed to stdout: `Icarus Verilog version 12.0 (stable) ()`. **Exit code 0** | Source of `driver/main.c` at eSim's pinned commit (see below); confirmed with apt's 12.0 on Ubuntu 24.04 |
 
 **Why `iverilog -V` exits with 0.** This comes from reading
 [`driver/main.c` at commit `de415b2f`](https://raw.githubusercontent.com/steveicarus/iverilog/de415b2f03c1b41ab5b46faa9632716d98c1cd86/driver/main.c),
@@ -140,7 +141,8 @@ not from running it:
 - `main` then does `if (version_flag) return t_version_only();`, and that function ends with `return 0;`.
 - `t_version_only()` also runs `ivlpp -V` and `ivl -V`. If they fail, it prints to stderr but still returns 0.
 
-Whether older releases (apt's v12, Bleyer's v12 build) behave the same way is **UNVERIFIED**.
+apt's iverilog 12.0 on Ubuntu 24.04 behaves the same way (run for real on 2026-11-20). Whether
+Bleyer's Windows v12 build does is **UNVERIFIED**.
 
 ### ngspice program name on Windows
 
@@ -166,6 +168,41 @@ Checked with `winget search <name> --source winget`, then `winget show --id <id>
 | GHDL | `ghdl.ghdl.ucrt64.mcode` (the only match) | 6.0.0 | portable zip, `ghdl-mcode-6.0.0-ucrt64.zip` | **No.** This is the mcode backend, which cannot link eSim's VHDL server (`GHDL-BACKEND-26.04.md:34-44`) |
 | Verilator | — (no match for `verilator`) | — | — | No package |
 | Icarus Verilog | `Icarus.Verilog` | 12.2022.06.11 | inno, `https://bleyer.org/icarus/iverilog-v12-20220611-x64_setup.exe` | Partly. This is the same file eSim's `deps-manifest.json:33-37` says has **no libvvp**. The Verilog Verifier works, but d_cosim does not |
+
+## Tested on
+
+### Ubuntu 24.04.5 LTS under WSL2, 2026-11-20
+
+- **Machine:** Ubuntu 24.04.5 LTS under WSL2 on Windows 11 (kernel `6.18.58.1-microsoft-standard-WSL2`), Python 3.12.3.
+- **Setup:** the author installed the tools beforehand with apt. esim-toolman only read; it ran no `sudo` and no apt.
+- **Fixtures:** the real outputs are saved in `tests/fixtures/ubuntu-24.04/`. The tests replay them, so these results stay checked.
+
+| Tool | Installed apt package | Newest in apt | Version output (the line the pattern reads) | Exit | Read as |
+|---|---|---|---|---|---|
+| ngspice | `ngspice 42+ds-3build1` | same | `** ngspice-42 : Circuit level simulation program` | 0 | 42 |
+| KiCad | `kicad 7.0.11+dfsg-1build4` | same | `7.0.11` | 0 | 7.0.11 |
+| GHDL | `ghdl-llvm 4.1.0+dfsg-0ubuntu2.1` | same (`ghdl-gcc` 4.1.0+dfsg-0ubuntu2.1 also available) | `GHDL 4.1.0 (Ubuntu 4.1.0+dfsg-0ubuntu2.1) [Dunoon edition]` | 0 | 4.1.0 |
+| Verilator | `verilator 5.020-1` | same | `Verilator 5.020 2024-01-01 rev (Debian 5.020-1)` | 0 | 5.020 |
+| Icarus Verilog | `iverilog 12.0-2build2` | same | `Icarus Verilog version 12.0 (stable) ()` | 0 | 12.0 |
+
+What the real system showed, beyond the versions:
+
+- **ghdl-llvm cannot compile.** `ghdl -a t.vhdl` exits with code 3: `/usr/lib/ghdl/llvm/ghdl1-llvm: error while loading shared libraries: libLLVM-18.so.18.1: cannot open shared object file`. eSim's `GHDL-BACKEND-26.04.md:108-124` describes this bug, and it is still present in `4.1.0+dfsg-0ubuntu2.1`.
+- **Ubuntu's iverilog has no libvvp.** `dpkg -L iverilog` lists no libvvp, so d_cosim needs eSim's own Icarus build.
+- **Ubuntu's ngspice has none of eSim's code models.** `dpkg -L ngspice` lists only `analog.cm`, `digital.cm`, `spice2poly.cm`, `table.cm`, `xtradev.cm` and `xtraevt.cm`: no `ghdl.cm`, no `Ngveri.cm` and no `ivlng`.
+- **apt can't upgrade far enough.** It offers no KiCad newer than 7.0.11 and no ngspice newer than 42.
+- **KiCad's library packages were missing.** `kicad-symbols`, `kicad-footprints`, `kicad-libraries` and `kicad-templates` were not installed, and `/usr/share/kicad/symbols` did not exist. That's despite `kicad` recommending `kicad-libraries`.
+- **`dpkg-query` reports "not installed" two ways:** `unknown ok not-installed` with exit code 0 for a package it knows, and exit code 1 ("no packages found") for one it doesn't.
+
+What esim-toolman got wrong on this machine at first, each now fixed with a test (`test_replay_of_the_real_ubuntu_2404_machine` replays the whole machine):
+
+1. **Icarus Verilog was reported as plain OK**, but without libvvp d_cosim cannot work. Fix: an `own_build` check for iverilog.
+2. **The ngspice warning listed only VHDL and Verilator co-simulation as broken.** Ubuntu's ngspice also lacks `ivlng`, so d_cosim is broken too. Fix: `verilog-cosim` added to its `breaks`.
+3. **The fix for KiCad 7 and ngspice 42 was `apt-get install --only-upgrade`**, which changes nothing, because apt has nothing newer. Fix: the doctor asks `apt-cache policy` for apt's newest version first. If even that is too old, it says so and shows the manifest's note instead.
+4. **The ngspice note showed users a rule meant for esim-toolman's developers.** Fix: the rule moved into a TOML comment.
+5. **The missing KiCad library packages went unnoticed.** Fix: on Linux the doctor now checks that every apt package in the manifest is installed (or the fallback set). The check is skipped for eSim's own builds.
+
+Not tested yet: a real (non-WSL) Ubuntu, Ubuntu 26.04, eSim's own ngspice and Icarus builds, the GHDL mcode backend, and Windows with the tools installed.
 
 ## Known installer problems
 
@@ -284,6 +321,6 @@ Checked with `winget search <name> --source winget`, then `winget show --id <id>
 - Whether `sudo apt-get` receives the proxy variables.
 - Whether the `v2.6` tag exists upstream.
 - Whether the official ngspice Windows build's plain `ngspice.exe` is the GUI version.
-- Whether older Icarus releases (apt v12, Bleyer v12) also exit with 0 for `iverilog -V`.
+- Whether Bleyer's Windows v12 build also exits with 0 for `iverilog -V` (apt's 12.0 does).
 - Whether `verilator` from eSim's bundled MSYS2 can run outside the MSYS2 shell on Windows.
 - Whether eSim 2.6 works with KiCad 10, which is what winget installs by default.

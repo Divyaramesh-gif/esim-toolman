@@ -102,9 +102,14 @@ recommended = "45.2"
 source = "eSim builds ngspice 45.2 (configure.ac:19 in nghdl/nghdl-simulator-source.tar.xz); d_cosim and the ivlng bridge need ngspice >= 42 (nghdl/install-nghdl.sh:294-297). Output format: ngspice src/frontend/misccoms.c:187-199"
 
 [tools.ngspice.install.apt]
+# Rule for esim-toolman's installer (not written yet): refuse to apt-install
+# ngspice when eSim's own build is detected, because eSim's installer removes
+# this package and points /usr/bin/ngspice at its own build
+# (nghdl/install-nghdl.sh:351-356). The doctor already follows this rule: it
+# never suggests apt for eSim's own build.
 packages = ["ngspice"]
-note = "Distro ngspice: plain simulation works, but it lacks eSim's own ghdl.cm and Ngveri.cm code models, so VHDL and Verilator co-simulation need eSim's build (nghdl/install-nghdl.sh). eSim's installer removes this package and points /usr/bin/ngspice at its own build. Rule for esim-toolman's installer: refuse to apt-install ngspice when eSim's own build is detected (in search_paths.linux). Not enforced yet; the installer is not written."
-source = "eSim nghdl/install-nghdl.sh:339-356"
+note = "This is the distro ngspice: plain simulation works, but it lacks eSim's ghdl.cm and Ngveri.cm code models and the ivlng bridge to Icarus, so co-simulation needs eSim's own build"
+source = "eSim nghdl/install-nghdl.sh:339-356; Ubuntu 24.04's ngspice 42+ds-3build1 ships no ghdl.cm, Ngveri.cm or ivlng (dpkg -L ngspice, checked 2026-11-20)"
 
 [tools.ngspice.install.winget]
 available = false
@@ -116,13 +121,13 @@ kind = "own_build"
 # Where eSim's own build lives. On Ubuntu, /usr/bin/ngspice is a symlink
 # into ~/nghdl-simulator, which is why symlinks are followed.
 paths = ['~/nghdl-simulator', '%SystemDrive%\FOSSEE\eSim\tools\nghdl']
-breaks = ["vhdl-cosim", "verilog-models"]
-found_note = "This is eSim's own ngspice build, which has eSim's ghdl.cm and Ngveri.cm code models, so VHDL and Verilator co-simulation can work"
-problem = "This ngspice is not eSim's own build (it is a distro or official build). It lacks eSim's ghdl.cm and Ngveri.cm code models, so VHDL and Verilator co-simulation will not work. Plain simulation still works"
+breaks = ["vhdl-cosim", "verilog-models", "verilog-cosim"]
+found_note = "This is eSim's own ngspice build, with eSim's ghdl.cm and Ngveri.cm code models and the ivlng bridge to Icarus, so co-simulation can work"
+problem = "This ngspice is not eSim's own build (it is a distro or official build). It lacks eSim's ghdl.cm and Ngveri.cm code models and the ivlng bridge to Icarus, so VHDL, Verilator and d_cosim co-simulation will not work. Plain simulation still works"
 fix = "For co-simulation, install eSim's own ngspice build"
 fix_linux = "Run eSim's Ubuntu installer (./install-eSim.sh --install); it builds this ngspice with nghdl/install-nghdl.sh. Do not apt-install ngspice afterwards: that would replace eSim's build."
 fix_windows = "Install eSim for Windows from https://esim.fossee.in/; it bundles its own ngspice build."
-source = "eSim nghdl/install-nghdl.sh:279-356 (builds into ~/nghdl-simulator, symlinks /usr/bin/ngspice); windows/esim.bat:16-25; windows/build-windows.ps1:749-754 (code models in eSim's build); INSTALL:89 (download page)"
+source = "eSim nghdl/install-nghdl.sh:279-356 (builds into ~/nghdl-simulator, symlinks /usr/bin/ngspice), :474-482 (its ghdl.cm and ivlng); windows/esim.bat:16-25; windows/build-windows.ps1:305-309 (the official Windows build has no ivlng or ghdl.cm), :749-754; Ubuntu 24.04's ngspice has none of them (dpkg -L ngspice, 2026-11-20); INSTALL:89 (download page)"
 
 
 # ------------------------------------------------------------------ KiCad --
@@ -153,8 +158,8 @@ source = "eSim refuses KiCad 6 and needs >= 7 (Ubuntu/install-eSim.sh:733-737); 
 
 [tools.kicad.install.apt]
 packages = ["kicad", "kicad-footprints", "kicad-libraries", "kicad-symbols", "kicad-templates"]
-note = "Installed from the distro archive only; esim-toolman does not add PPAs. If the distro KiCad is older than the minimum, eSim's own installer gets a newer one from the PPA kicad/kicad-9.0-releases."
-source = "eSim Ubuntu/install-eSim.sh:903-923"
+note = "Newer KiCad for Ubuntu comes from the KiCad PPA (ppa:kicad/kicad-9.0-releases), which eSim's own installer adds; esim-toolman does not add PPAs. kicad-symbols, kicad-footprints and kicad-libraries hold KiCad's standard libraries, which eSim's KiCad symbol table refers to"
+source = "eSim Ubuntu/install-eSim.sh:720-731, 903-923; eSim library/kicadLibrary/template/sym-lib-table (237 libraries under ${KICAD6_SYMBOL_DIR}); Ubuntu 24.04 apt offers only KiCad 7.0.11 (apt-cache policy kicad, checked 2026-11-20)"
 
 [tools.kicad.install.winget]
 available = true
@@ -287,3 +292,17 @@ available = true
 id = "Icarus.Verilog"
 note = "Bleyer's v12 build without libvvp: the Verilog Verifier works, d_cosim does not."
 source = "winget show --id Icarus.Verilog (docs/esim-dependencies.md, winget packages, checked 2026-11-17); eSim windows/deps-manifest.json:33-37"
+
+[[tools.iverilog.checks]]
+kind = "own_build"
+# eSim's d_cosim only uses its own Icarus build with libvvp: eSim records that
+# build in ~/.nghdl/config.ini [COSIM], and with any other iverilog eSim turns
+# d_cosim off (nghdl/install-nghdl.sh:445-458).
+paths = ['~/nghdl-simulator/iverilog', '%SystemDrive%\FOSSEE\eSim\library\bin\iverilog']
+breaks = ["verilog-cosim"]
+found_note = "This is eSim's own Icarus Verilog build with libvvp, which d_cosim co-simulation needs"
+problem = "This Icarus Verilog is not eSim's own build. Ubuntu's iverilog package and Bleyer's Windows build have no libvvp, so d_cosim co-simulation will not work. The Verilog Verifier still works"
+fix = "For d_cosim, install eSim's own Icarus Verilog build"
+fix_linux = "Run eSim's Ubuntu installer (./install-eSim.sh --install); nghdl/install-nghdl.sh builds Icarus with --enable-libvvp."
+fix_windows = "Install eSim for Windows from https://esim.fossee.in/; its full installer bundles Icarus with libvvp."
+source = "Ubuntu 24.04's iverilog 12.0-2build2 ships no libvvp (dpkg -L iverilog, checked 2026-11-20); eSim nghdl/install-nghdl.sh:21-27, 360-430, 445-458; windows/deps-manifest.json:33-44"

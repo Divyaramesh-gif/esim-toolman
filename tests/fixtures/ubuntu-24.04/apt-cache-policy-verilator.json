@@ -1,0 +1,13 @@
+{
+  "command": [
+    "/usr/bin/apt-cache",
+    "policy",
+    "verilator"
+  ],
+  "exit_code": 0,
+  "stdout": "verilator:\n  Installed: 5.020-1\n  Candidate: 5.020-1\n  Version table:\n *** 5.020-1 500\n        500 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages\n        100 /var/lib/dpkg/status\n",
+  "stderr": "",
+  "env": {
+    "LC_ALL": "C"
+  }
+}

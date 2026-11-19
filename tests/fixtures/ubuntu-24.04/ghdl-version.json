@@ -1,0 +1,9 @@
+{
+  "command": [
+    "/usr/bin/ghdl",
+    "--version"
+  ],
+  "exit_code": 0,
+  "stdout": "GHDL 4.1.0 (Ubuntu 4.1.0+dfsg-0ubuntu2.1) [Dunoon edition]\n Compiled with GNAT Version: 13.3.0\n llvm 18.1.8 code generator\nWritten by Tristan Gingold.\n\nCopyright (C) 2003 - 2024 Tristan Gingold.\nGHDL is free software, covered by the GNU General Public License.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n",
+  "stderr": ""
+}

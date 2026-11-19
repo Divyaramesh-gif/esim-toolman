@@ -5,8 +5,8 @@ returns a list of Findings. A Finding is one observation: a severity, the
 problem in plain words, the eSim features it breaks, and a fix for this
 platform. Nothing here installs or changes anything. The only programs it
 starts are the tools themselves (version commands and the manifest's
-checks, which work in a temporary folder that is deleted afterwards) and
-dpkg-query, which only reads the package list.
+checks, which work in a temporary folder that is deleted afterwards), and
+on Linux dpkg-query and apt-cache, which only read the package lists.
 
 Severity rules:
   ERROR    a required tool is missing, or an installed tool cannot work
@@ -19,6 +19,7 @@ Severity rules:
 
 import itertools
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -47,7 +48,7 @@ from esim_toolman.manifest import (
     Tool,
 )
 from esim_toolman.platform_info import PlatformInfo
-from esim_toolman.versions import Status, classify, extract_version
+from esim_toolman.versions import Status, classify, compare_versions, extract_version
 
 COMPILE_TIMEOUT_SECONDS = 60.0
 """Time limit for each command of a compile_test check."""
@@ -235,7 +236,7 @@ def platform_findings(manifest: Manifest, info: PlatformInfo) -> list[Finding]:
 
 def tool_findings(tool: Tool, ctx: _Context) -> list[Finding]:
     """Everything the doctor checks for one tool, in this order: installed
-    and version, PATH, the manifest's checks, apt conflicts."""
+    and version, PATH, the manifest's checks, apt packages, apt conflicts."""
     detection = detect_tool(
         tool, ctx.info.system,
         env=ctx.env, home=ctx.home, which=ctx.which, runner=ctx.runner, timeout=ctx.timeout,
@@ -251,6 +252,7 @@ def tool_findings(tool: Tool, ctx: _Context) -> list[Finding]:
     # same way, so they are skipped.
     if detection.problem not in (Problem.TIMEOUT, Problem.START_FAILED):
         findings += [_run_check(tool, check, detection.path, ctx) for check in tool.checks]
+    findings += _apt_packages(tool, detection.path, ctx)
     findings += _apt_conflicts(tool, ctx)
     return findings
 
@@ -278,7 +280,6 @@ def _version_finding(tool: Tool, detection: DetectResult, ctx: _Context) -> Find
     # If this is eSim's own build, updating it is done with eSim's
     # installer, never with the package manager (it would replace it).
     own_fix = _own_build_fix(tool, detection.path, ctx)
-    upgrade = own_fix or install_fix(tool, ctx.info, upgrade=True)
 
     def finding(severity: Severity, problem: str, breaks: tuple[str, ...] = (), fix: str | None = None) -> Finding:
         return Finding(tool.key, tool.name, severity, "installed", problem, breaks, fix)
@@ -287,13 +288,13 @@ def _version_finding(tool: Tool, detection: DetectResult, ctx: _Context) -> Find
         return finding(
             Severity.ERROR,
             f"{tool.name} {installed} is older than the minimum {spec.minimum} that eSim needs.",
-            tool.needed_for, upgrade,
+            tool.needed_for, own_fix or _upgrade_fix(tool, spec.minimum, ctx),
         )
     if status is Status.BELOW_RECOMMENDED:
         return finding(
             Severity.WARNING,
             f"{tool.name} {installed} works, but eSim recommends {spec.recommended} or newer.",
-            fix=upgrade,
+            fix=own_fix or _upgrade_fix(tool, spec.recommended, ctx),
         )
     if status is Status.UNKNOWN:
         reason = detection.error or "its output has no version number the manifest pattern recognises"
@@ -419,13 +420,79 @@ def _own_build_fix(tool: Tool, path: str, ctx: _Context) -> str | None:
 
 
 # --------------------------------------------------------------------------
-# apt conflicts (Linux only)
+# apt (Linux only). dpkg-query and apt-cache only read the package lists.
 # --------------------------------------------------------------------------
+
+# "Candidate: 7.0.11+dfsg-1build4" in `apt-cache policy` output.
+_CANDIDATE_RE = re.compile(r"^\s*Candidate:\s*(\S+)", re.MULTILINE)
+# The upstream part of a Debian version: "1:7.0.11+dfsg-1build4" -> "7.0.11".
+_UPSTREAM_RE = re.compile(r"(?:\d+:)?(\d+(?:\.\d+)*)")
+
+
+def _apt_installed(package: str, dpkg_query: str, ctx: _Context) -> bool | None:
+    """True if dpkg says the package is installed, False if not, None if
+    dpkg-query did not answer.
+
+    Installed means the status ends with the word "installed", as in
+    "install ok installed". Not installed shows up two ways: a package dpkg
+    has never seen makes it exit with 1, and one it knows but that is not
+    installed (or was removed) prints "unknown ok not-installed" or
+    "deinstall ok config-files" with exit code 0.
+    """
+    result = run_command(
+        (dpkg_query, "-W", "--showformat=${Status}", package),
+        runner=ctx.runner, timeout=ctx.timeout,
+    )
+    if result.problem in (Problem.TIMEOUT, Problem.START_FAILED):
+        return None
+    return result.exit_code == 0 and result.stdout.split()[-1:] == ["installed"]
+
+
+def _apt_packages(tool: Tool, path: str | None, ctx: _Context) -> list[Finding]:
+    """Are all of the tool's apt packages from the manifest installed?
+
+    The program alone is not enough: on Ubuntu, `kicad` works without
+    `kicad-symbols`, but then KiCad's standard libraries are missing. The
+    check passes if every package in `packages` is installed, or every one
+    in `fallback`. It is skipped for eSim's own build, which is not an apt
+    package at all.
+    """
+    if ctx.info.system != "linux" or tool.apt is None or path is None:
+        return []
+    dpkg_query = ctx.which("dpkg-query")
+    if dpkg_query is None or _own_build_fix(tool, path, ctx) is not None:
+        return []
+
+    missing = [p for p in tool.apt.packages if _apt_installed(p, dpkg_query, ctx) is False]
+    if not missing:
+        return [
+            Finding(
+                tool.key, tool.name, Severity.OK, "apt_packages",
+                f"Its apt packages are installed: {', '.join(tool.apt.packages)}.",
+            )
+        ]
+    if tool.apt.fallback and all(
+        _apt_installed(p, dpkg_query, ctx) for p in tool.apt.fallback
+    ):
+        return [
+            Finding(
+                tool.key, tool.name, Severity.OK, "apt_packages",
+                f"Its fallback apt packages are installed: {', '.join(tool.apt.fallback)}.",
+            )
+        ]
+    note = f" {_sentence(tool.apt.note)}" if tool.apt.note else ""
+    return [
+        Finding(
+            tool.key, tool.name, Severity.WARNING, "apt_packages",
+            f"These apt packages for {tool.name} are not installed: {', '.join(missing)}. "
+            f"eSim installs them together with {tool.name}.{note}",
+            fix=f"sudo apt-get install {' '.join(missing)}",
+        )
+    ]
 
 
 def _apt_conflicts(tool: Tool, ctx: _Context) -> list[Finding]:
-    """Ask dpkg-query whether any of the tool's conflicting packages is
-    installed. dpkg-query only reads the package database."""
+    """Is any of the tool's conflicting packages installed?"""
     if ctx.info.system != "linux" or tool.apt is None or not tool.apt.conflicts:
         return []
     packages = " ".join(tool.apt.conflicts)
@@ -442,21 +509,16 @@ def _apt_conflicts(tool: Tool, ctx: _Context) -> list[Finding]:
 
     findings: list[Finding] = []
     for package in tool.apt.conflicts:
-        result = run_command(
-            (dpkg_query, "-W", "--showformat=${Status}", package),
-            runner=ctx.runner, timeout=ctx.timeout,
-        )
-        if result.problem in (Problem.TIMEOUT, Problem.START_FAILED):
+        installed = _apt_installed(package, dpkg_query, ctx)
+        if installed is None:
             findings.append(
                 Finding(
                     tool.key, tool.name, Severity.WARNING, "apt_conflict",
-                    f"Could not check whether {package} is installed: {result.error}.",
+                    f"Could not check whether {package} is installed (dpkg-query did not answer).",
                     fix=f"Check by hand: dpkg -l {package}",
                 )
             )
-        # "install ok installed" means installed. An unknown package makes
-        # dpkg-query exit with 1; a removed one says "... config-files".
-        elif result.exit_code == 0 and result.stdout.split()[-1:] == ["installed"]:
+        elif installed:
             note = f" {_sentence(tool.apt.note)}" if tool.apt.note else ""
             findings.append(
                 Finding(
@@ -473,6 +535,45 @@ def _apt_conflicts(tool: Tool, ctx: _Context) -> list[Finding]:
                 )
             )
     return findings
+
+
+def _apt_candidate(package: str, ctx: _Context) -> str | None:
+    """The newest version apt could install, as dotted numbers ("7.0.11"),
+    from `apt-cache policy`. None if apt-cache is missing or does not say.
+
+    LC_ALL=C keeps apt's output in English, so "Candidate:" can be found.
+    """
+    apt_cache = ctx.which("apt-cache")
+    if apt_cache is None:
+        return None
+    result = run_command(
+        (apt_cache, "policy", package),
+        runner=ctx.runner, timeout=ctx.timeout, env={**ctx.env, "LC_ALL": "C"},
+    )
+    match = _CANDIDATE_RE.search(result.stdout) if result.problem is None else None
+    if match is None or match.group(1) == "(none)":
+        return None
+    upstream = _UPSTREAM_RE.match(match.group(1))
+    return upstream.group(1) if upstream else None
+
+
+def _upgrade_fix(tool: Tool, target: str | None, ctx: _Context) -> str:
+    """How to reach version ``target``. On Linux, first ask apt for its
+    newest version: if even that is older than the target, an apt upgrade
+    cannot help, so say that (with the manifest's note) instead of
+    suggesting a command that would change nothing."""
+    if ctx.info.system == "linux" and tool.apt is not None and target is not None:
+        package = tool.apt.packages[0]
+        candidate = _apt_candidate(package, ctx)
+        if candidate is not None and compare_versions(candidate, target) < 0:
+            lines = [
+                f"apt cannot reach {target}: the newest {package} it offers is {candidate} "
+                f"(see `apt-cache policy {package}`)."
+            ]
+            if tool.apt.note:
+                lines.append(f"Note: {_sentence(tool.apt.note)}")
+            return "\n".join(lines)
+    return install_fix(tool, ctx.info, upgrade=True)
 
 
 # --------------------------------------------------------------------------

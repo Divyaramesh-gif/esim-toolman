@@ -148,13 +148,15 @@ def run_command(
     runner: Runner | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> CommandResult:
     """Run one command safely and report what happened. Never raises for
     timeouts, programs that cannot start, or non-zero exit codes.
 
     The command is a list of arguments, never a shell string. stdin is
     closed so a program waiting for input fails instead of hanging, and
-    ``timeout`` (seconds) stops programs that never finish.
+    ``timeout`` (seconds) stops programs that never finish. ``cwd`` is the
+    folder to run in; ``env``, if given, is the program's whole environment.
     """
     runner = runner or subprocess.run
     command = tuple(command)
@@ -170,6 +172,8 @@ def run_command(
     }
     if cwd is not None:
         options["cwd"] = cwd
+    if env is not None:
+        options["env"] = dict(env)
     try:
         completed = runner(list(command), **options)
     except subprocess.TimeoutExpired as exc:

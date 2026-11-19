@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from captured import load, output
 
 from esim_toolman.manifest import (
     CompileTestCheck,
@@ -491,7 +492,8 @@ def test_real_manifest_ngspice_own_build_check() -> None:
     (check,) = ngspice.checks
     assert isinstance(check, OwnBuildCheck)
     assert "~/nghdl-simulator" in check.paths
-    assert check.breaks == ("vhdl-cosim", "verilog-models")
+    # Ubuntu's ngspice has no ghdl.cm, Ngveri.cm or ivlng (checked on 24.04).
+    assert check.breaks == ("vhdl-cosim", "verilog-models", "verilog-cosim")
     # Every feature an own_build check says it breaks must be a feature some
     # tool in the manifest provides.
     features = {f for tool in load_manifest().tools.values() for f in tool.needed_for}
@@ -499,20 +501,43 @@ def test_real_manifest_ngspice_own_build_check() -> None:
 
 
 @pytest.mark.parametrize(
-    ("key", "sample_output", "expected"),
+    ("key", "captured_run", "expected"),
     [
-        # Format string "** %s-%s : %s" from ngspice src/frontend/misccoms.c.
-        ("ngspice", "** ngspice-45.2 : Circuit level simulation program", "45.2"),
-        # eSim's build checks that kicad-cli's output contains "9.0.3".
-        ("kicad", "9.0.3", "9.0.3"),
-        # The samples below follow each tool's usual output; they are not
-        # captured from a real run (see docs/esim-dependencies.md).
-        ("ghdl", "GHDL 4.1.0 (Ubuntu 4.1.0+dfsg-0ubuntu2.1) [Dunoon edition]", "4.1.0"),
-        ("verilator", "Verilator 5.020 2024-01-01 rev (Debian 5.020-1)", "5.020"),
-        ("iverilog", "Icarus Verilog version 12.0 (stable) (v12_0)", "12.0"),
+        ("ngspice", "ngspice-version", "42"),
+        ("kicad", "kicad-cli-version", "7.0.11"),
+        ("ghdl", "ghdl-version", "4.1.0"),
+        ("verilator", "verilator-version", "5.020"),
+        ("iverilog", "iverilog-version", "12.0"),
     ],
 )
-def test_real_manifest_version_patterns(key: str, sample_output: str, expected: str) -> None:
-    pattern = load_manifest().tools[key].version.pattern
-    match = pattern.search(sample_output)
+def test_version_patterns_on_real_ubuntu_2404_output(key: str, captured_run: str, expected: str) -> None:
+    # Outputs captured on Ubuntu 24.04 (tests/fixtures/ubuntu-24.04/).
+    tool = load_manifest().tools[key]
+    run = load(captured_run)
+    assert run["command"][1:] == list(tool.version.args)  # the manifest's own command
+    assert run["exit_code"] == 0
+    match = tool.version.pattern.search(output(captured_run))
     assert match is not None and match.group(1) == expected
+
+
+def test_ngspice_pattern_on_esims_own_build_format() -> None:
+    # eSim's own ngspice 45.2 was not available to capture; this follows the
+    # format string "** %s-%s : %s" in ngspice's src/frontend/misccoms.c.
+    pattern = load_manifest().tools["ngspice"].version.pattern
+    match = pattern.search("** ngspice-45.2 : Circuit level simulation program")
+    assert match is not None and match.group(1) == "45.2"
+
+
+def test_real_manifest_iverilog_own_build_check() -> None:
+    (check,) = load_manifest().tools["iverilog"].checks
+    assert isinstance(check, OwnBuildCheck)
+    assert "~/nghdl-simulator/iverilog" in check.paths
+    assert check.breaks == ("verilog-cosim",)
+
+
+def test_user_facing_notes_hold_no_developer_todos() -> None:
+    # A rule for esim-toolman's own developers once sat in a note that the
+    # doctor shows to users; such rules belong in TOML comments.
+    for tool in load_manifest().tools.values():
+        for note in (tool.apt.note if tool.apt else None, tool.winget.note if tool.winget else None):
+            assert note is None or "not written" not in note, tool.key
