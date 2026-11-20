@@ -154,6 +154,16 @@ def test_named_tool_that_is_ok_is_skipped(tmp_path: Path) -> None:
     assert item.reason == "already installed: 12.0 at /usr/bin/iverilog"
 
 
+def test_nothing_to_install_says_so(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Found on the README walk-through: with only "skip" lines, the output
+    # used to end at the plan, so it was unclear whether anything happened.
+    computer = FakeComputer("apt-get")
+    computer.program("iverilog", ("-V",), load("iverilog-version"))
+    assert install(MANIFEST, machine(computer, tmp_path), tool_key="iverilog") == 0
+    assert capsys.readouterr().out.rstrip().endswith("Nothing to install.")
+    assert computer.questions == []
+
+
 def test_named_optional_tool_that_is_missing_is_planned(tmp_path: Path) -> None:
     computer = FakeComputer("apt-get")
     (item,) = build_plan(MANIFEST, machine(computer, tmp_path), AptBackend(), tool_key="iverilog")

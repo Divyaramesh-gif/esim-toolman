@@ -140,6 +140,7 @@ def install(
         print("\nDry run: nothing was installed.")
         return EXIT_NOT_OK if blocked else EXIT_OK
     if not to_install or backend is None:  # INSTALL items only exist with a backend
+        print("\nNothing to install.")
         return EXIT_NOT_OK if blocked else EXIT_OK
 
     count = len(to_install)

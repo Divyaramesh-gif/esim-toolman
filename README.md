@@ -194,20 +194,25 @@ Every command that `install` actually ran is added as one JSON line to `~/.esim-
 - the result and exit code;
 - the verification result, with what it found.
 
-A dry run, a refused step or a "no" runs nothing, so it is not logged. `log` prints the last 20 entries, or the last `-n N`. An entry looks like this:
+A dry run, a refused step or a "no" runs nothing, so it is not logged. `log` prints the last 20 entries, or the last `-n N`.
+
+For example, after installing Icarus Verilog with apt on Ubuntu 24.04, the entry would look like this. The first indented line is what verification found; the second is a warning the doctor kept:
 
 ```
 2026-11-20T10:00:00+00:00  iverilog  install (apt)  ok, exit 0, verification passed: sudo apt-get install -y iverilog
     Icarus Verilog 12.0 found at /usr/bin/iverilog.
+    warning: This Icarus Verilog is not eSim's own build. Ubuntu's iverilog package and Bleyer's Windows build have no libvvp, so d_cosim co-simulation will not work. The Verilog Verifier still works. Detected: /usr/bin/iverilog
 ```
+
+This entry is an example, built the same way the tests build one: a real install has not been verified yet (see [What has been tested](#what-has-been-tested)).
 
 ### Using a different manifest
 
-By default esim-toolman reads `manifest/tools.toml`. To use another manifest file, for example an edited copy, put `--manifest` and the file's path before the command:
+By default esim-toolman reads `manifest/tools.toml`. To use another manifest file, for example an edited copy, put `--manifest` and the file's path before the command. This example keeps the copy in your home folder, out of the repository:
 
 ```bash
-cp manifest/tools.toml my-tools.toml
-python3 -m esim_toolman --manifest my-tools.toml status
+cp manifest/tools.toml ~/my-tools.toml
+python3 -m esim_toolman --manifest ~/my-tools.toml status
 ```
 
 Exit code **2** from any command means esim-toolman could not run: a wrong argument, an unknown tool name, or a manifest with errors (the message says which value is wrong).
