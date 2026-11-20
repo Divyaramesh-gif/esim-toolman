@@ -139,7 +139,64 @@ def run_doctor(
     shutil.which, subprocess.run and os.path.realpath. Tests use them;
     normal callers leave them out.
     """
-    ctx = _Context(
+    ctx = _make_context(info, env, home, which, runner, resolve, timeout, compile_timeout)
+    findings = platform_findings(manifest, info)
+    for tool in manifest.tools.values():
+        findings += tool_findings(tool, ctx)
+    return drop_repeated_notes(order_findings(findings))
+
+
+def check_tool(
+    tool: Tool,
+    info: PlatformInfo,
+    *,
+    env: Mapping[str, str] | None = None,
+    home: str | None = None,
+    which: Which | None = None,
+    runner: Runner | None = None,
+    resolve: Callable[[str], str] | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    compile_timeout: float = COMPILE_TIMEOUT_SECONDS,
+) -> list[Finding]:
+    """The doctor's findings for one tool only, ordered for display. The
+    installer uses this to verify an install. Same keyword arguments as
+    run_doctor()."""
+    ctx = _make_context(info, env, home, which, runner, resolve, timeout, compile_timeout)
+    return drop_repeated_notes(order_findings(tool_findings(tool, ctx)))
+
+
+def is_own_build(
+    tool: Tool,
+    path: str,
+    *,
+    env: Mapping[str, str],
+    home: str,
+    resolve: Callable[[str], str] = os.path.realpath,
+) -> bool:
+    """True if the program at ``path`` is eSim's own build, according to
+    any own_build check the tool has in the manifest."""
+    real_path = resolve(path)
+    for check in tool.checks:
+        if isinstance(check, OwnBuildCheck):
+            folders = [expand_search_path(p, env, home) for p in check.paths]
+            if any(_is_inside(real_path, f) for f in folders if f is not None):
+                return True
+    return False
+
+
+def _make_context(
+    info: PlatformInfo,
+    env: Mapping[str, str] | None,
+    home: str | None,
+    which: Which | None,
+    runner: Runner | None,
+    resolve: Callable[[str], str] | None,
+    timeout: float,
+    compile_timeout: float,
+) -> _Context:
+    """Fill in the real environment, home, which, runner and resolver for
+    whatever the caller did not replace."""
+    return _Context(
         info=info,
         env=os.environ if env is None else env,
         home=str(Path.home()) if home is None else home,
@@ -149,10 +206,6 @@ def run_doctor(
         timeout=timeout,
         compile_timeout=compile_timeout,
     )
-    findings = platform_findings(manifest, info)
-    for tool in manifest.tools.values():
-        findings += tool_findings(tool, ctx)
-    return drop_repeated_notes(order_findings(findings))
 
 
 def order_findings(findings: Sequence[Finding]) -> list[Finding]:
@@ -434,6 +487,15 @@ def _is_own_build(check: OwnBuildCheck, path: str, ctx: _Context) -> tuple[bool,
     real_path = ctx.resolve(path)
     folders = [expand_search_path(p, ctx.env, ctx.home) for p in check.paths]
     return any(_is_inside(real_path, f) for f in folders if f is not None), real_path
+
+
+def own_build_fix(tool: Tool, info: PlatformInfo) -> str | None:
+    """How to update eSim's own build of ``tool`` on this platform (the fix
+    of its own_build check), or None if the tool has no such check."""
+    for check in tool.checks:
+        if isinstance(check, OwnBuildCheck):
+            return check_fix(check, info)
+    return None
 
 
 def _own_build_fix(tool: Tool, path: str, ctx: _Context) -> str | None:

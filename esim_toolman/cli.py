@@ -1,14 +1,16 @@
 """Command-line interface: ``python -m esim_toolman <command>``.
 
-Both commands are read-only and both accept ``--json``:
+  status   for every tool: is it installed, which version, is that OK?
+           Read-only. Exit code 0 if every required tool is OK, otherwise 1.
+  doctor   diagnoses problems and suggests a fix for this platform.
+           Read-only. Exit code 1 if there is any ERROR finding, otherwise 0.
+  install  `install <tool>` or `install --missing`: shows a plan, asks,
+           installs, verifies (see installer.py). --dry-run only shows the
+           plan. Exit code 0 if everything planned was installed and verified.
+  log      prints the last actions from the action log.
 
-  status  for every tool: is it installed, which version, is that OK?
-          Exit code 0 if every required tool is OK, otherwise 1.
-  doctor  diagnoses problems and suggests a fix for this platform.
-          Exit code 1 if there is any ERROR finding, otherwise 0.
-
-Exit code 2 means esim-toolman could not run (bad arguments or a broken
-manifest).
+status and doctor accept --json. Exit code 2 means esim-toolman could not
+run (bad arguments, an unknown tool, or a broken manifest).
 """
 
 import argparse
@@ -18,6 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from esim_toolman import actionlog, installer
 from esim_toolman.detect import DetectResult, detect_tool
 from esim_toolman.doctor import (
     PLATFORM,
@@ -223,6 +226,53 @@ def run_doctor_command(manifest_path: Path, *, as_json: bool) -> int:
     return EXIT_NOT_OK if has_error else EXIT_OK
 
 
+def run_install_command(
+    manifest_path: Path,
+    *,
+    tool: str | None,
+    missing: bool,
+    dry_run: bool,
+    yes: bool,
+) -> int:
+    """The ``install`` command. Returns the installer's exit code."""
+    manifest = _load(manifest_path)
+    if manifest is None:
+        return EXIT_ERROR
+    info = detect_platform(manifest.ubuntu_supported_versions)
+    machine = installer.make_machine(info)
+    try:
+        return installer.install(
+            manifest, machine, tool_key=tool, missing=missing, dry_run=dry_run, yes=yes
+        )
+    except KeyboardInterrupt:
+        print("\nInterrupted. The action log records what had already run.", file=sys.stderr)
+        return 130
+
+
+def run_log_command(count: int) -> int:
+    """The ``log`` command: print the last ``count`` actions."""
+    path = actionlog.default_log_path()
+    entries, unreadable = actionlog.read_last(count, path)
+    if not entries:
+        print(f"No actions logged yet ({path}).")
+    for entry in entries:
+        print(actionlog.format_entry(entry))
+    if unreadable:
+        print(f"esim-toolman: skipped {unreadable} unreadable line(s) in {path}", file=sys.stderr)
+    return EXIT_OK
+
+
+def _positive_int(text: str) -> int:
+    """argparse type: a whole number of 1 or more."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be 1 or more")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The argument parser: global options, then one sub-command."""
     parser = argparse.ArgumentParser(
@@ -246,6 +296,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="diagnose problems and suggest fixes for this platform (read-only)",
     )
     doctor.add_argument("--json", action="store_true", help="print JSON instead of text")
+
+    install = commands.add_parser(
+        "install",
+        help="install a tool, or every missing required tool, after showing a plan",
+    )
+    target = install.add_mutually_exclusive_group(required=True)
+    target.add_argument("tool", nargs="?", help="the tool to install, e.g. iverilog")
+    target.add_argument(
+        "--missing",
+        action="store_true",
+        help="install every required tool that is NOT_FOUND or TOO_OLD",
+    )
+    install.add_argument(
+        "--dry-run", action="store_true", help="only print the plan; run nothing"
+    )
+    install.add_argument(
+        "-y", "--yes", action="store_true", help="do not ask for confirmation"
+    )
+
+    log = commands.add_parser("log", help="show the last actions esim-toolman ran")
+    log.add_argument(
+        "-n", "--last", type=_positive_int, default=20, metavar="N",
+        help="how many actions to show (default: 20)",
+    )
     return parser
 
 
@@ -259,4 +333,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_status(args.manifest, as_json=args.json)
     if args.command == "doctor":
         return run_doctor_command(args.manifest, as_json=args.json)
+    if args.command == "install":
+        return run_install_command(
+            args.manifest, tool=args.tool, missing=args.missing, dry_run=args.dry_run, yes=args.yes
+        )
+    if args.command == "log":
+        return run_log_command(args.last)
     return EXIT_ERROR  # not reached: argparse only accepts known commands

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from esim_toolman import cli
+from esim_toolman import actionlog, cli
 from esim_toolman.platform_info import PlatformInfo
 
 TEST_MANIFEST = r'''
@@ -79,6 +79,9 @@ class FakeSystem:
 
     def doctor(self, *extra: str) -> int:
         return cli.main(["--manifest", str(self.manifest), "doctor", *extra])
+
+    def cli(self, *args: str) -> int:
+        return cli.main(["--manifest", str(self.manifest), *args])
 
 
 @pytest.fixture
@@ -231,6 +234,72 @@ def test_doctor_json(system: FakeSystem, capsys: pytest.CaptureFixture[str]) -> 
 def test_doctor_with_a_broken_manifest_exits_2(system: FakeSystem) -> None:
     system.manifest.write_text("schema_version = 2\n[tools]\n", encoding="utf-8")
     assert system.doctor() == 2
+
+
+# ------------------------------------------------------------ install and log
+
+
+def test_install_dry_run_missing(system: FakeSystem, capsys: pytest.CaptureFixture[str]) -> None:
+    system.programs["apt-get"] = ""  # apt-get is on PATH (it is never run in a dry run)
+
+    # alpha is required and missing, but the test manifest has no apt package
+    # for it: a manual step, so the exit code is 1.
+    assert system.cli("install", "--dry-run", "--missing") == 1
+
+    out = capsys.readouterr().out
+    assert "Install plan:" in out
+    alpha = next(line for line in out.splitlines() if line.startswith("  Alpha"))
+    assert alpha.split()[:5] == ["Alpha", "*", "NOT_FOUND", "manual", "-"]
+    assert "The manifest has no apt package for Alpha" in alpha
+    assert "Beta" not in out  # optional tools are not part of --missing
+    assert "Dry run: nothing was installed." in out
+
+
+@pytest.mark.parametrize("args", [["install"], ["install", "alpha", "--missing"]])
+def test_install_needs_exactly_one_target(args: list[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(args)
+    assert exit_info.value.code == 2
+
+
+def test_install_unknown_tool_exits_2(system: FakeSystem, capsys: pytest.CaptureFixture[str]) -> None:
+    assert system.cli("install", "nope", "--dry-run") == 2
+    assert "unknown tool 'nope'" in capsys.readouterr().err
+
+
+def test_log_shows_the_last_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "actions.log"
+    monkeypatch.setattr(actionlog, "default_log_path", lambda: path)
+    for tool in ("a", "b", "c"):
+        actionlog.append(
+            tool=tool, action="install", backend="apt",
+            command=["sudo", "apt-get", "install", "-y", tool],
+            result="ok", exit_code=0, verification="passed", path=path,
+        )
+
+    assert cli.main(["log", "-n", "2"]) == 0
+
+    out = capsys.readouterr().out
+    assert "  b  install (apt)  ok, exit 0, verification passed: sudo apt-get install -y b" in out
+    assert "  c  install (apt)" in out
+    assert "  a  install" not in out
+
+
+def test_log_without_any_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(actionlog, "default_log_path", lambda: tmp_path / "missing.log")
+    assert cli.main(["log"]) == 0
+    assert "No actions logged yet" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("count", ["0", "-3", "many"])
+def test_log_count_must_be_a_positive_number(count: str) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["log", "-n", count])
+    assert exit_info.value.code == 2
 
 
 def test_no_command_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
