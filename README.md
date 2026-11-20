@@ -14,8 +14,8 @@ Built for the FOSSEE Winter Internship 2026, Screening Task 5.
 | `log` | Shows what `install` has run | No |
 
 All tool data (program names, versions, packages, checks) lives in
-[`manifest/tools.toml`](manifest/tools.toml); each value there names its
-source.
+[`manifest/tools.toml`](manifest/tools.toml). Its version, package and check
+entries each name the source they come from.
 
 ## Documents
 
@@ -39,7 +39,7 @@ source.
 ## Requirements
 
 - **Python 3.12 or newer.** esim-toolman uses only Python's standard library, so it needs no `pip install`.
-- **Ubuntu** with apt, or **Windows 10/11** with winget (part of "App Installer" from the Microsoft Store).
+- **Ubuntu** with apt (tested on 24.04), or **Windows** with winget, which is part of "App Installer" from the Microsoft Store (tested on Windows 11).
 - **git**, to download the code.
 - For `install` on Ubuntu, a user that can run `sudo`.
 
@@ -123,7 +123,7 @@ For each tool, `doctor`:
   - for ngspice and Icarus Verilog, whether they are eSim's own builds;
 - on Ubuntu, checks that the tool's apt packages are installed and that no conflicting package is.
 
-Every finding is `ERROR`, `WARNING` or `OK`, names the eSim features it breaks, and gives a fix for this computer. Part of the real output from Ubuntu 24.04:
+Each problem is an `ERROR` or a `WARNING`. It names the eSim features it breaks, if any, and gives a fix for this computer. Checks that pass are listed as `OK`. Part of the real output from Ubuntu 24.04:
 
 ```
 GHDL

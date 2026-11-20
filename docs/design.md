@@ -21,8 +21,9 @@ real output it comes from.
 **A program can be installed and still not work for eSim.**
 
 - **GHDL's backend.** eSim's VHDL co-simulation needs GHDL's llvm or gcc
-  backend. Ubuntu's `ghdl` meta-package installs the mcode backend, which
-  cannot link eSim's VHDL server. On Ubuntu 24.04, `ghdl-llvm` installs and
+  backend. According to eSim's notes for Ubuntu 26.04, the `ghdl`
+  meta-package installs the mcode backend, which cannot link eSim's VHDL
+  server. On Ubuntu 24.04, `ghdl-llvm` installs and
   reports its version, but cannot compile: on 2026-11-20 `ghdl -a t.vhdl`
   exited with code 3 (`libLLVM-18.so.18.1: cannot open shared object file`).
   A version check alone reports this GHDL as fine.
@@ -30,9 +31,11 @@ real output it comes from.
   libvvp (checked with `dpkg -L iverilog`), so eSim's d_cosim co-simulation
   cannot use it, although the Verilog Verifier can.
 - **ngspice without eSim's code models.** Ubuntu's ngspice 42 has no
-  `ghdl.cm`, `Ngveri.cm` or `ivlng`. Those exist only in eSim's own ngspice
-  build, which eSim's installer compiles into `~/nghdl-simulator` and links at
-  `/usr/bin/ngspice`. Installing apt's ngspice afterwards would replace it.
+  `ghdl.cm`, `Ngveri.cm` or `ivlng`. `ghdl.cm` and `Ngveri.cm` exist only in
+  eSim's own ngspice build. `ivlng` is part of upstream ngspice 42 and later,
+  but Ubuntu's package leaves it out. eSim's installer compiles its own build
+  into `~/nghdl-simulator` and links it at `/usr/bin/ngspice`; installing
+  apt's ngspice afterwards would replace it.
 - **KiCad without its libraries.** On the test machine, `kicad` was installed
   but `kicad-symbols`, `kicad-footprints`, `kicad-libraries` and
   `kicad-templates` were not. eSim's KiCad symbol table refers to 206 of
@@ -43,7 +46,7 @@ real output it comes from.
 - On Ubuntu 24.04, apt's newest KiCad is 7.0.11 and its newest ngspice is 42,
   while eSim 2.6 targets KiCad 9 and builds ngspice 45.2. A plain
   `apt-get install --only-upgrade` changes nothing.
-- On Windows, winget's latest KiCad is 10.0.8. eSim 2.6 ships and tests 9.0.3.
+- On Windows, winget's latest KiCad was 10.0.8 when checked (2026-11-17). eSim 2.6 ships and tests 9.0.3.
   The only winget GHDL package uses the mcode backend, and there are no winget
   packages for ngspice or Verilator.
 
@@ -136,7 +139,7 @@ this to replace them with fakes.
 ## 5. Design decisions
 
 **1. Manifest-driven data.**
-- *Decision:* everything about a tool lives in `manifest/tools.toml`: program names, extra search folders, version command and pattern, minimum and recommended versions, apt packages (with fallback and conflicts), winget ID (with an optional pinned version), and health checks. Each value records where it came from.
+- *Decision:* everything about a tool lives in `manifest/tools.toml`: program names, extra search folders, version command and pattern, minimum and recommended versions, apt packages (with fallback and conflicts), winget ID (with an optional pinned version), and health checks. Each version, package and check entry has a required `source` field saying where it came from.
 - *Reasons:*
   - Tools and versions change more often than code.
   - Every number can be traced to eSim's source or a real output.
@@ -231,7 +234,7 @@ and this design document. Status values:
 
 **How the tests avoid depending on the machine.**
 - `shutil.which`, `subprocess.run`, the symlink resolver, the keyboard and the registry are replaced by fakes. Folders are created in pytest's temporary directory.
-- No test needs an EDA tool installed. No test installs anything, runs `sudo`, or writes outside the temporary directory.
+- No test needs an EDA tool installed. No test installs anything or runs `sudo`. Tests write only to temporary folders: pytest's, and the doctor's own compile-test folder, which is deleted afterwards.
 - In the installer tests, a fake install command changes the fake computer, for example making a program appear. That lets verification really pass or fail.
 
 **Real outputs as fixtures.**
@@ -275,7 +278,7 @@ A later run found a note printed twice. The two README walk-throughs found five 
 - **Install commands always start with `sudo`.** On a system without `sudo` (for example a container running as root) they would fail to start. Untested.
 - **Three of the five tools have no winget package** (ngspice, GHDL, Verilator), and winget's Icarus has no libvvp.
 - **Windows verification may report "not found"** if Bleyer's Icarus installer does not add itself to PATH. Untested.
-- **It must be run from the repository folder.** The manifest is found next to the package, so `pip install .` would not give a working command.
+- **It must be run from the repository folder.** The manifest is found next to the package folder, so a copy installed with `pip install .` would not find it. This follows from the code; it has not been tried.
 - **Only Ubuntu is supported on Linux.** Other distributions get a warning, and their package names may differ.
 - **Newer than tested is still OK.** Versions above the recommended one are reported as OK, for example KiCad 10.
 - **Only the five tools in the manifest are covered.**
