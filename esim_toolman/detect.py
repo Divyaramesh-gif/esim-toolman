@@ -12,8 +12,9 @@ Read-only. For one tool from the manifest, detect_tool():
    shell, with stdin closed and a time limit, capturing stdout and stderr;
 4. returns a DetectResult saying what happened.
 
-run_command() is also used by doctor.py for its checks. Reading the version
-number out of the output is versions.py's job.
+run_command() is also used by doctor.py for its checks and by the apt
+backend for its install simulation. Reading the version number out of the
+output is versions.py's job.
 """
 
 import glob

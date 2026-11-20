@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "esim-toolman"
 version = "0.1.0"
-description = "Detects, diagnoses, installs and configures eSim's external tools"
+description = "Checks, diagnoses and installs eSim's external tools"
 requires-python = ">=3.12"
 dependencies = []
 

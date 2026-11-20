@@ -104,7 +104,8 @@ class Finding:
 @dataclass(frozen=True)
 class _Context:
     """Everything the per-tool checks need, bundled so each helper takes one
-    argument instead of eight. Tests swap in fakes through run_doctor()."""
+    argument instead of eight. Tests swap in fakes through run_doctor() and
+    check_tool()."""
 
     info: PlatformInfo
     env: Mapping[str, str]

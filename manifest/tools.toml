@@ -47,7 +47,8 @@
 #   note                Required when available = false: how to fix it by hand.
 #   source
 #
-# [[tools.<key>.checks]]  Extra health checks, run by `esim-toolman doctor`.
+# [[tools.<key>.checks]]  Extra health checks, run by `doctor`, and by
+#                         `install` to verify an install.
 #   kind = "output_excludes"
 #       args, text, ignore_case (optional, default false): run the program
 #       with `args`; the check fails if the output contains `text`.
@@ -102,11 +103,10 @@ recommended = "45.2"
 source = "eSim builds ngspice 45.2 (configure.ac:19 in nghdl/nghdl-simulator-source.tar.xz); d_cosim and the ivlng bridge need ngspice >= 42 (nghdl/install-nghdl.sh:294-297). Output format: ngspice src/frontend/misccoms.c:187-199"
 
 [tools.ngspice.install.apt]
-# Rule for esim-toolman's installer (not written yet): refuse to apt-install
-# ngspice when eSim's own build is detected, because eSim's installer removes
-# this package and points /usr/bin/ngspice at its own build
-# (nghdl/install-nghdl.sh:351-356). The doctor already follows this rule: it
-# never suggests apt for eSim's own build.
+# Rule: never apt-install ngspice over eSim's own build, because eSim's
+# installer removes this package and points /usr/bin/ngspice at its own build
+# (nghdl/install-nghdl.sh:351-356). `install` refuses to (installer.py,
+# refusal_reason), and `doctor` never suggests apt for eSim's own build.
 packages = ["ngspice"]
 note = "This is the distro ngspice: plain simulation works, but it lacks eSim's ghdl.cm and Ngveri.cm code models and the ivlng bridge to Icarus, so co-simulation needs eSim's own build"
 source = "eSim nghdl/install-nghdl.sh:339-356; Ubuntu 24.04's ngspice 42+ds-3build1 ships no ghdl.cm, Ngveri.cm or ivlng (dpkg -L ngspice, checked 2026-11-20)"

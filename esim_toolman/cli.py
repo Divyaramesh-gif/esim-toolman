@@ -110,7 +110,7 @@ def required_tools_ok(statuses: Sequence[ToolStatus]) -> bool:
     return all(item.status is Status.OK for item in statuses if item.tool.required)
 
 
-def format_table(info: PlatformInfo, statuses: Sequence[ToolStatus]) -> str:
+def format_status_text(info: PlatformInfo, statuses: Sequence[ToolStatus]) -> str:
     """The plain-text report: platform, warnings, the table, then details."""
     lines = [
         f"Platform: {info.describe()}",
@@ -146,7 +146,7 @@ def format_table(info: PlatformInfo, statuses: Sequence[ToolStatus]) -> str:
     return "\n".join(lines)
 
 
-def format_json(info: PlatformInfo, statuses: Sequence[ToolStatus]) -> str:
+def format_status_json(info: PlatformInfo, statuses: Sequence[ToolStatus]) -> str:
     """The same report as JSON."""
     report = {
         "platform": info.to_dict(),
@@ -200,14 +200,14 @@ def _load(manifest_path: Path) -> Manifest | None:
         return None
 
 
-def run_status(manifest_path: Path, *, as_json: bool) -> int:
+def run_status_command(manifest_path: Path, *, as_json: bool) -> int:
     """The ``status`` command. Returns the exit code."""
     manifest = _load(manifest_path)
     if manifest is None:
         return EXIT_ERROR
     info = detect_platform(manifest.ubuntu_supported_versions)
     statuses = check_tools(manifest, info)
-    print(format_json(info, statuses) if as_json else format_table(info, statuses))
+    print(format_status_json(info, statuses) if as_json else format_status_text(info, statuses))
     return EXIT_OK if required_tools_ok(statuses) else EXIT_NOT_OK
 
 
@@ -277,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
     """The argument parser: global options, then one sub-command."""
     parser = argparse.ArgumentParser(
         prog="esim-toolman",
-        description="Detects, diagnoses, installs and configures eSim's external tools.",
+        description="Checks, diagnoses and installs eSim's external tools.",
     )
     parser.add_argument(
         "--manifest",
@@ -330,7 +330,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     args = build_parser().parse_args(argv)
     if args.command == "status":
-        return run_status(args.manifest, as_json=args.json)
+        return run_status_command(args.manifest, as_json=args.json)
     if args.command == "doctor":
         return run_doctor_command(args.manifest, as_json=args.json)
     if args.command == "install":

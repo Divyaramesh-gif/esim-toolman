@@ -1,1 +1,1 @@
-"""esim-toolman: detects, diagnoses, installs and configures eSim's external tools."""
+"""esim-toolman: checks, diagnoses and installs eSim's external tools."""
