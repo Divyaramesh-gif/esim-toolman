@@ -15,8 +15,13 @@ Built for the FOSSEE Winter Internship 2026, Screening Task 5.
 
 All tool data (program names, versions, packages, checks) lives in
 [`manifest/tools.toml`](manifest/tools.toml); each value there names its
-source. The research behind it is in
-[`docs/esim-dependencies.md`](docs/esim-dependencies.md).
+source.
+
+## Documents
+
+- [`docs/design.md`](docs/design.md): the design. Covers the problem, architecture, modules, design decisions, which requirements are covered, testing, known limitations and future work.
+- [`docs/report.pdf`](docs/report.pdf): the design document plus real terminal output of `status`, `doctor`, `install --dry-run` and the test runs, from Ubuntu 24.04 and Windows 11.
+- [`docs/esim-dependencies.md`](docs/esim-dependencies.md): research into what eSim needs, how eSim's own installers install it, and what was found on a real Ubuntu 24.04.
 
 ## What has been tested
 

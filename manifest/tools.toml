@@ -159,7 +159,7 @@ source = "eSim refuses KiCad 6 and needs >= 7 (Ubuntu/install-eSim.sh:733-737); 
 [tools.kicad.install.apt]
 packages = ["kicad", "kicad-footprints", "kicad-libraries", "kicad-symbols", "kicad-templates"]
 note = "Newer KiCad for Ubuntu comes from the KiCad PPA (ppa:kicad/kicad-9.0-releases), which eSim's own installer adds; esim-toolman does not add PPAs. kicad-symbols, kicad-footprints and kicad-libraries hold KiCad's standard libraries, which eSim's KiCad symbol table refers to"
-source = "eSim Ubuntu/install-eSim.sh:720-731, 903-923; eSim library/kicadLibrary/template/sym-lib-table (237 libraries under ${KICAD6_SYMBOL_DIR}); Ubuntu 24.04 apt offers only KiCad 7.0.11 (apt-cache policy kicad, checked 2026-11-20)"
+source = "eSim Ubuntu/install-eSim.sh:720-731, 903-923; eSim library/kicadLibrary/template/sym-lib-table (206 of KiCad's standard libraries, under ${KICAD6_SYMBOL_DIR}); Ubuntu 24.04 apt offers only KiCad 7.0.11 (apt-cache policy kicad, checked 2026-11-20)"
 
 [tools.kicad.install.winget]
 available = true
