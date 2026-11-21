@@ -21,13 +21,15 @@ entries each name the source they come from.
 
 - [`docs/design.md`](docs/design.md): the design. Covers the problem, architecture, modules, design decisions, which requirements are covered, testing, known limitations and future work.
 - [`docs/report.pdf`](docs/report.pdf): the design document plus real terminal output of `status`, `doctor`, `install --dry-run` and the test runs, from Ubuntu 24.04 and Windows 11.
-- [`docs/esim-dependencies.md`](docs/esim-dependencies.md): research into what eSim needs, how eSim's own installers install it, and what was found on a real Ubuntu 24.04.
+- [`docs/esim-dependencies.md`](docs/esim-dependencies.md): research into what eSim needs, how eSim's own installers install it, and what was found on a real Ubuntu 24.04 and in a real Windows install.
 
 ## What has been tested
 
-- **Automated tests:** the test suite passes on Windows 11 (Python 3.12 and 3.14) and on Ubuntu 24.04 under WSL2 (Python 3.12). It needs no EDA tools: it fakes every command, using outputs captured on a real Ubuntu 24.04 machine.
-- **`status` and `doctor` on real systems:** run on Ubuntu 24.04 (WSL2) with ngspice, KiCad, GHDL, Verilator and Icarus Verilog installed from apt, and on Windows 11 with none of them installed.
-- **`install`:** tested with simulated package managers, and its `--dry-run` was run on both systems. **A real install has not been verified yet.**
+- **Automated tests:** the test suite passes on Windows 11 (Python 3.12 and 3.14) and on Ubuntu 24.04 under WSL2 (Python 3.12). It needs no EDA tools: it fakes every command, using outputs captured on real Ubuntu 24.04 and Windows 11 machines.
+- **`status` and `doctor` on real systems:**
+  - Ubuntu 24.04 (WSL2), with ngspice, KiCad, GHDL, Verilator and Icarus Verilog installed from apt;
+  - Windows 11, first with none of them installed, then with Icarus Verilog installed.
+- **`install`:** one real install so far, Icarus Verilog with winget on Windows 11. It worked, and it showed that the Icarus installer does not add itself to PATH, which esim-toolman now handles. **A real apt install has not been run yet.** Everything else in `install` is tested with simulated package managers, and `--dry-run` was run on both systems.
 - **Not tested:** Ubuntu 26.04 (listed in the manifest, but never run), a non-WSL Ubuntu, and eSim's own ngspice and Icarus builds.
 
 ## What it does not do
@@ -179,12 +181,15 @@ What happens after the plan:
    - eSim's own build of the tool is installed (installing the package would replace it);
    - apt's simulation (`apt-get install -s`, which changes nothing) shows the install would also bring in a conflicting package, such as `ghdl-mcode` for GHDL.
 3. **It asks** `Run the N install commands above? [y/N]`. Only `y` or `yes` counts as yes.
-4. **It runs each command,** with apt's or winget's own output on screen, then **verifies** the result by re-running that tool's `doctor` checks.
+4. **It runs each command,** with apt's or winget's own output on screen, then **verifies** the result by re-running that tool's `doctor` checks. There are three possible results:
+   - **passed;**
+   - **installed, but not on PATH:** the tool was found only in one of the manifest's extra folders. This happened in a real test: winget installed Icarus Verilog into `C:\iverilog\bin` without adding that folder to PATH. esim-toolman prints the command to add it;
+   - **failed.**
 5. **If verification fails** and the manifest has a fallback (GHDL: `ghdl-llvm`, then `ghdl-gcc`), it offers the fallback, and asks again.
 
 On a new Ubuntu system, run `sudo apt-get update` once before installing; esim-toolman does not run it.
 
-Exit code: **0** if everything planned was installed and verified (or nothing was needed), **1** if anything was refused, manual, declined, failed or not verified.
+Exit code: **0** if everything planned was installed and verified on PATH (or nothing was needed). **1** if anything was refused, manual, declined, failed or not verified, or was installed but is not on PATH.
 
 ### `log`: what `install` has run
 
@@ -209,7 +214,7 @@ For example, after installing Icarus Verilog with apt on Ubuntu 24.04, the entry
     warning: This Icarus Verilog is not eSim's own build. Ubuntu's iverilog package and Bleyer's Windows build have no libvvp, so d_cosim co-simulation will not work. The Verilog Verifier still works. Detected: /usr/bin/iverilog
 ```
 
-This entry is an example, built the same way the tests build one: a real install has not been verified yet (see [What has been tested](#what-has-been-tested)).
+This Ubuntu entry is an example, built the same way the tests build one; no real apt install has been run yet (see [What has been tested](#what-has-been-tested)).
 
 ### Using a different manifest
 

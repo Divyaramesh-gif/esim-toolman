@@ -273,7 +273,15 @@ executables = ["iverilog"]
 [tools.iverilog.search_paths]
 # eSim's own build with libvvp, which d_cosim needs.
 linux = ['~/nghdl-simulator/iverilog/bin']
-windows = ['%SystemDrive%\FOSSEE\eSim\library\bin\iverilog\bin']
+# 1. eSim's own build (libvvp). 2. Bleyer's build, which winget installs
+#    (Icarus.Verilog). Found in a real install test on Windows 11
+#    (2026-11-21): `winget install --id Icarus.Verilog` put it in
+#    C:\iverilog\bin and did NOT add that folder to PATH, so the folder has
+#    to be searched (docs/esim-dependencies.md, Tested on).
+windows = [
+    '%SystemDrive%\FOSSEE\eSim\library\bin\iverilog\bin',
+    '%SystemDrive%\iverilog\bin',
+]
 
 [tools.iverilog.version]
 # -V prints the version to stdout and exits with 0 (driver/main.c at de415b2f).

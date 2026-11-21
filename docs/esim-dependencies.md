@@ -141,8 +141,9 @@ not from running it:
 - `main` then does `if (version_flag) return t_version_only();`, and that function ends with `return 0;`.
 - `t_version_only()` also runs `ivlpp -V` and `ivl -V`. If they fail, it prints to stderr but still returns 0.
 
-apt's iverilog 12.0 on Ubuntu 24.04 behaves the same way (run for real on 2026-11-20). Whether
-Bleyer's Windows v12 build does is **UNVERIFIED**.
+Both real builds tested behave the same way: apt's iverilog 12.0 on Ubuntu 24.04 (run on
+2026-11-20), and Bleyer's Windows build that winget installs (run on 2026-11-21; it prints
+`Icarus Verilog version 12.0 (devel) (s20150603-1539-g2693dd32b)`).
 
 ### ngspice program name on Windows
 
@@ -167,7 +168,7 @@ Checked with `winget search <name> --source winget`, then `winget show --id <id>
 | KiCad | `KiCad.KiCad` | latest 10.0.8; `--versions` also lists 9.0.3 to 9.0.8 | nullsoft, `github.com/KiCad/kicad-source-mirror/releases/.../kicad-10.0.8-x86_64.exe` | Yes, **pinned to 9.0.3** in `manifest/tools.toml`. eSim 2.6 ships and tests KiCad 9.0.3 (`deps-manifest.json:54`), and whether it works with KiCad 10 is **UNVERIFIED**. `winget show --id KiCad.KiCad --version 9.0.3` lists installer SHA256 `582635ced8552c07e043ce9f2eba01dc0c42c96dcb87ce12ba85db1530da593f`, the same hash eSim pins for the same file (`deps-manifest.json:57`) |
 | GHDL | `ghdl.ghdl.ucrt64.mcode` (the only match) | 6.0.0 | portable zip, `ghdl-mcode-6.0.0-ucrt64.zip` | **No.** This is the mcode backend, which cannot link eSim's VHDL server (`GHDL-BACKEND-26.04.md:34-44`) |
 | Verilator | — (no match for `verilator`) | — | — | No package |
-| Icarus Verilog | `Icarus.Verilog` | 12.2022.06.11 | inno, `https://bleyer.org/icarus/iverilog-v12-20220611-x64_setup.exe` | Partly. This is the same file eSim's `deps-manifest.json:33-37` says has **no libvvp**. The Verilog Verifier works, but d_cosim does not |
+| Icarus Verilog | `Icarus.Verilog` | 12.2022.06.11 | inno, `https://bleyer.org/icarus/iverilog-v12-20220611-x64_setup.exe` | Partly. This is the same file eSim's `deps-manifest.json:33-37` says has **no libvvp**. The Verilog Verifier works, but d_cosim does not. A real install put it in `C:\iverilog` and did **not** add `C:\iverilog\bin` to PATH (see Tested on) |
 
 ## Tested on
 
@@ -202,7 +203,37 @@ What esim-toolman got wrong on this machine at first, each now fixed with a test
 4. **The ngspice note showed users a rule meant for esim-toolman's developers.** Fix: the rule moved into a TOML comment.
 5. **The missing KiCad library packages went unnoticed.** Fix: on Linux the doctor now checks that every apt package in the manifest is installed (or the fallback set). The check is skipped for eSim's own builds.
 
-Not tested yet: a real (non-WSL) Ubuntu, Ubuntu 26.04, eSim's own ngspice and Icarus builds, the GHDL mcode backend, and Windows with the tools installed.
+### Windows 11, a real install of Icarus Verilog with winget, 2026-11-21
+
+The first real install with esim-toolman. The author ran `python -m esim_toolman install iverilog` on Windows 11. The action log (`C:\Users\<you>\.esim-toolman\actions.log`) recorded two attempts, both running `winget install --id Icarus.Verilog --exact --accept-package-agreements --accept-source-agreements`:
+
+| Time (UTC) | Result | Verification |
+|---|---|---|
+| 17:21:48 | failed, exit code 2316632332, which is `0x8A15010C`. `winget error --input 0x8A15010C` names it `APPINSTALLER_CLI_ERROR_INSTALL_CANCELLED_BY_USER`, "You cancelled the installation" | skipped |
+| 17:23:21 | ok, exit code 0 | **failed**: "Icarus Verilog is still not found: iverilog not found on PATH" |
+
+What the real system showed:
+
+- **Where winget put it:** Bleyer's build (winget version 12.2022.06.11) went into `C:\iverilog`, with `iverilog.exe` in `C:\iverilog\bin`.
+- **It is not on PATH.** The installer did not add `C:\iverilog\bin` to PATH: neither the machine PATH nor the user PATH in the registry contains it. A new terminal cannot find `iverilog`.
+- **`C:\iverilog\bin\iverilog.exe -V` exits with 0** and prints `Icarus Verilog version 12.0 (devel) (s20150603-1539-g2693dd32b)`, read as 12.0. It is saved as `tests/fixtures/windows-11/iverilog-version.json`.
+- **No libvvp:** `C:\iverilog` holds `vvp.exe` but no libvvp library, as eSim's `deps-manifest.json:37` says.
+
+What esim-toolman got wrong, now fixed with tests:
+
+1. **Verification said "not found" although the install had worked.** esim-toolman searched only PATH and eSim's own folder. Fixes:
+   - the manifest now also searches `%SystemDrive%\iverilog\bin` (after eSim's own folder);
+   - the installer reports a program found only in such a folder as "installed, but not on PATH", with the doctor's command to add the folder, instead of "Verification FAILED", and offers no fallback for it.
+
+   Tests: `test_installed_but_not_on_path_is_reported_with_the_fix`, `test_once_the_folder_is_on_path_verification_passes`, `test_not_on_path_does_not_trigger_the_fallback`, `test_real_manifest_searches_bleyers_icarus_folder_on_windows`, `test_iverilog_pattern_on_real_windows_output`.
+
+After the fix, on the same machine:
+
+- `status` shows `Icarus Verilog OK 12.0 C:\iverilog\bin\iverilog.EXE`.
+- `doctor` warns that `C:\iverilog\bin` is not on PATH and gives the exact PowerShell command to add it.
+- The installer's verification of this install returns `not-on-path` instead of `failed`.
+
+Not tested yet (as of 2026-11-21): a real install with apt, a real (non-WSL) Ubuntu, Ubuntu 26.04, eSim's own ngspice and Icarus builds, the GHDL mcode backend, and Windows with KiCad, ngspice, GHDL or Verilator installed.
 
 ## Known installer problems
 
@@ -321,6 +352,5 @@ Not tested yet: a real (non-WSL) Ubuntu, Ubuntu 26.04, eSim's own ngspice and Ic
 - Whether `sudo apt-get` receives the proxy variables.
 - Whether the `v2.6` tag exists upstream.
 - Whether the official ngspice Windows build's plain `ngspice.exe` is the GUI version.
-- Whether Bleyer's Windows v12 build also exits with 0 for `iverilog -V` (apt's 12.0 does).
 - Whether `verilator` from eSim's bundled MSYS2 can run outside the MSYS2 shell on Windows.
 - Whether eSim 2.6 works with KiCad 10, which is what winget installs by default.

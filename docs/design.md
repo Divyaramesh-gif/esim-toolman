@@ -36,6 +36,10 @@ real output it comes from.
   but Ubuntu's package leaves it out. eSim's installer compiles its own build
   into `~/nghdl-simulator` and links it at `/usr/bin/ngspice`; installing
   apt's ngspice afterwards would replace it.
+- **Installed, but not on PATH.** A real `winget install --id Icarus.Verilog`
+  on Windows 11 (2026-11-21) put Icarus in `C:\iverilog\bin` and did not add
+  that folder to PATH. A new terminal, and any program that looks on PATH,
+  cannot find it.
 - **KiCad without its libraries.** On the test machine, `kicad` was installed
   but `kicad-symbols`, `kicad-footprints`, `kicad-libraries` and
   `kicad-templates` were not. eSim's KiCad symbol table refers to 206 of
@@ -132,7 +136,7 @@ this to replace them with fakes.
 | `detect.py` | Finds a tool's program: first in the manifest's extra folders (with `~`, `%VAR%`, `${VAR}` and `*` expanded), then on PATH. Runs its version command. `run_command()` runs any command as an argument list, never through a shell, with stdin closed and a time limit. | One safe way to start programs, shared by the doctor and the apt backend. |
 | `doctor.py` | Turns detection, versions, the manifest's checks and (on Linux) `dpkg-query`/`apt-cache` answers into findings. Each finding has a severity, the problem, the eSim features it breaks, and a fix for this platform. | Diagnosis is separate from installing, so it can stay read-only and be reused to verify installs. |
 | `backends/` | `base.py` defines one interface: build a command from the manifest, run it, and (apt only) simulate what it would install. `apt.py` builds `sudo apt-get install -y <packages>`; `winget.py` builds `winget install --id <id> --exact [--version <v>] --accept-package-agreements --accept-source-agreements`. | Package managers differ; the installer only knows the interface. |
-| `installer.py` | Builds the install plan, prints it, asks, runs each command, verifies it with the doctor's checks, offers the manifest's fallback, and logs every command it ran. | The only module that changes the system, kept apart so its safety rules sit in one place. |
+| `installer.py` | Builds the install plan, prints it, asks, runs each command, verifies it with the doctor's checks (passed; installed but not on PATH; failed), offers the manifest's fallback after a failure, and logs every command it ran. | The only module that changes the system, kept apart so its safety rules sit in one place. |
 | `actionlog.py` | Appends one JSON line per command run to `~/.esim-toolman/actions.log`; reads back the last N. | An audit trail that survives the program. |
 | `cli.py`, `__main__.py` | Arguments, output formats (text and JSON) and exit codes. | Keeps printing and argument handling out of the logic. |
 
@@ -186,6 +190,7 @@ this to replace them with fakes.
 - **Conflicts are checked by simulation.** Before installing a tool that has conflicting packages, apt's simulation (`apt-get install -s`, no root, no change) is asked what would be installed. If a conflict like `ghdl-mcode` would come along, or the simulation fails, the install is refused.
 - **Upgrade advice is checked against apt.** The doctor asks `apt-cache policy` for apt's newest version before suggesting an apt upgrade. If even that version is too old, it says so instead of suggesting a command that changes nothing.
 - **Verification on Windows reads PATH from the registry.** An installer that adds itself to PATH changes the registry, not the running process.
+- **"Installed, but not on PATH" is its own outcome.** A real winget install showed that an installer may succeed without putting the tool on PATH. When verification finds the tool only in one of the manifest's extra folders, it reports that, with the command to add the folder, instead of a failure. It offers no fallback in that case, because the install worked. The exit code is still 1, because a manual step is left.
 - **Real outputs are test fixtures** (section 7).
 
 ## 6. Requirements coverage
@@ -201,30 +206,30 @@ and this design document. Status values:
 
 | Requirement | Status | Evidence and gaps |
 |---|---|---|
-| Detect eSim's external tools | Done | `status`; run for real on Ubuntu 24.04 (all five found) and Windows 11 (none installed) |
-| Check versions against what eSim needs | Done | `versions.py`; minimum and recommended versions from eSim's sources; version patterns tested against real Ubuntu 24.04 output |
-| Diagnose problems | Done on Ubuntu; partly on Windows | `doctor` run for real on Ubuntu 24.04 (found the GHDL compile failure and 5 warnings). On Windows it has only run with no tools installed |
-| Install tools | Partly | `install` implemented with plan, dry run, confirmation, refusals, verification and fallback; 31 installer and 17 backend tests; dry runs on both systems. **No real install has been run yet** |
+| Detect eSim's external tools | Done | `status`; run for real on Ubuntu 24.04 (all five found) and Windows 11 (Icarus found after a real install; the other four not installed) |
+| Check versions against what eSim needs | Done | `versions.py`; minimum and recommended versions from eSim's sources; version patterns tested against real output from Ubuntu 24.04 and from Bleyer's Icarus on Windows 11 |
+| Diagnose problems | Done on Ubuntu; partly on Windows | `doctor` run for real on Ubuntu 24.04 (found the GHDL compile failure and 5 warnings). On Windows it has run with only Icarus installed (it found the folder not on PATH) |
+| Install tools | Partly | `install` implemented with plan, dry run, confirmation, refusals, verification and fallback; 34 installer and 17 backend tests; dry runs on both systems. **One real install so far:** Icarus with winget on Windows 11. It worked, and exposed a bug that is now fixed: Bleyer's installer does not put Icarus on PATH. **No real apt install has been run yet** |
 | Configure tools | Not done | No configuration step exists (no environment variables, no eSim config files) |
 | Linux with apt | Done for Ubuntu 24.04 | Tested under WSL2. Ubuntu 26.04 is in the manifest's supported list but has not been tested |
-| Windows with winget | Partly | Winget IDs confirmed with `winget show` for KiCad and Icarus only; ngspice, GHDL and Verilator have no usable winget package (the plan shows a manual fix). No real winget install has been run |
+| Windows with winget | Partly | Winget IDs confirmed with `winget show` for KiCad and Icarus only; ngspice, GHDL and Verilator have no usable winget package (the plan shows a manual fix). A real winget install of Icarus worked (2026-11-21); KiCad's has not been run |
 | Tools: ngspice, KiCad, GHDL, Verilator, "etc." | Partly | The five named tools are covered. Other eSim dependencies (Python packages, SKY130 and IHP PDKs, xterm) are not |
 | Every system change supports `--dry-run` and is logged | Done | `install` is the only command that changes the system; it has `--dry-run` and writes `~/.esim-toolman/actions.log`. Tested |
 | No `sudo` or install without showing the plan and asking (unless `--yes`) | Done | Tested (decision 4) |
 | Python standard library only | Done | No dependencies; imports checked |
 | Python 3.11+ (CLAUDE.md) | Partly | The project requires 3.12+ (`pyproject.toml`), as decided during development; 3.11 is untested and CLAUDE.md still says 3.11+ |
-| Tests for each module | Done | 244 tests, one test file per module (`test_backends.py` covers `backends/`) |
+| Tests for each module | Done | 249 tests, one test file per module (`test_backends.py` covers `backends/`) |
 | Design document | Done | This document |
 
 ## 7. Testing
 
-**Automated tests: 244.** They pass on Windows 11 (Python 3.12.10 and 3.14.0) and on Ubuntu 24.04.5 under WSL2 (Python 3.12.3).
+**Automated tests: 249.** They pass on Windows 11 (Python 3.12.10 and 3.14.0) and on Ubuntu 24.04.5 under WSL2 (Python 3.12.3).
 
 | Test file | Tests | Covers |
 |---|---|---|
-| `test_manifest.py` | 56 | The loader's checks; the real manifest's data; version patterns against real output |
+| `test_manifest.py` | 58 | The loader's checks; the real manifest's data; version patterns against real output |
 | `test_doctor.py` | 45 | Every kind of finding; GHDL mcode and compile failures; apt checks; a replay of the whole Ubuntu 24.04 machine |
-| `test_installer.py` | 31 | Plan building, every refusal, dry run, confirmation, verification, fallback, the log, Windows PATH |
+| `test_installer.py` | 34 | Plan building, every refusal, dry run, confirmation, verification (passed, not on PATH, failed), fallback, the log, Windows PATH |
 | `test_detect.py` | 27 | Path expansion, search order, safe command running, timeouts and failures |
 | `test_versions.py` | 25 | Version parsing, comparison and every status |
 | `test_cli.py` | 23 | Text and JSON output, exit codes, `install` and `log` arguments |
@@ -243,12 +248,14 @@ and this design document. Status values:
   - the GHDL compile commands;
   - `dpkg-query` for 11 packages;
   - `apt-cache policy` for 6 packages.
-- The version-pattern tests, the GHDL tests and the platform test use them.
+- `tests/fixtures/windows-11/` holds `iverilog -V` from Bleyer's build, captured on Windows 11 on 2026-11-21 after the real winget install.
+- The version-pattern tests, the GHDL tests, the platform test and the "not on PATH" installer tests use them.
 - `test_replay_of_the_real_ubuntu_2404_machine` replays the whole machine, so any command the doctor runs without a captured answer fails the test.
 
 **Runs on real systems.**
-- `status` and `doctor` on Ubuntu 24.04 (WSL2) with all five tools installed from apt, and on Windows 11 with none installed.
+- `status` and `doctor` on Ubuntu 24.04 (WSL2) with all five tools installed from apt, and on Windows 11, first with none installed and then with Icarus installed.
 - `install --dry-run --missing` on both.
+- **A real install:** `install iverilog` on Windows 11 (2026-11-21), which ran winget. The first attempt was cancelled at Windows' prompt (logged as failed, exit code `0x8A15010C`). The second installed Icarus into `C:\iverilog\bin`.
 - The README's steps followed on Ubuntu 24.04 with an empty home folder, as a new user would. That run included cloning the GitHub repository and installing pytest from nothing.
 
 **Bugs found by real runs, not by the tests.** The first real `doctor` run on Ubuntu 24.04 found five, all fixed with tests:
@@ -258,26 +265,26 @@ and this design document. Status values:
 4. A developer note was shown to users.
 5. Missing KiCad library packages were not noticed.
 
-A later run found a note printed twice. The two README walk-throughs found five problems in the README and the help text, and a missing "Nothing to install." message.
+A later run found a note printed twice. The two README walk-throughs found five problems in the README and the help text, and a missing "Nothing to install." message. The real winget install found one more: verification said "not found" because Bleyer's installer does not put Icarus on PATH and the folder was not searched. It is fixed with a search path and the "installed, but not on PATH" outcome.
 
 **Not tested:**
-- a real install (apt or winget);
+- a real install with apt, and a real KiCad install with winget;
 - a freshly installed Ubuntu (empty apt package lists, root user without `sudo`);
 - a non-WSL Ubuntu, and Ubuntu 26.04;
-- Windows with the tools installed;
+- Windows with KiCad, ngspice, GHDL or Verilator installed;
 - eSim's own ngspice and Icarus builds;
 - the GHDL mcode backend on a real system (its test output is made up, following eSim's notes).
 
 ## 8. Known limitations
 
-- **No real install has been verified.** The install logic is tested with simulated package managers and dry runs only.
+- **One real install so far** (Icarus with winget on Windows). apt installs are tested only with a simulated package manager and dry runs.
 - **No configuration.** esim-toolman does not set environment variables, PATH, or eSim's configuration files.
 - **It does not build eSim's own ngspice or Icarus.** For VHDL, Verilator and d_cosim co-simulation, `doctor` points to eSim's installer.
 - **apt cannot reach eSim's versions on Ubuntu 24.04** (KiCad 9, ngspice 45.2). esim-toolman does not add PPAs, so `doctor` explains this instead of fixing it.
 - **It does not run `sudo apt-get update`.** On a new system the user must run it first; the README says so.
 - **Install commands always start with `sudo`.** On a system without `sudo` (for example a container running as root) they would fail to start. Untested.
 - **Three of the five tools have no winget package** (ngspice, GHDL, Verilator), and winget's Icarus has no libvvp.
-- **Windows verification may report "not found"** if Bleyer's Icarus installer does not add itself to PATH. Untested.
+- **winget's Icarus is not put on PATH by its installer** (found in a real install). esim-toolman finds it in `C:\iverilog\bin` and gives the command to add that folder to PATH, but does not change PATH itself.
 - **It must be run from the repository folder.** The manifest is found next to the package folder, so a copy installed with `pip install .` would not find it. This follows from the code; it has not been tried.
 - **Only Ubuntu is supported on Linux.** Other distributions get a warning, and their package names may differ.
 - **Newer than tested is still OK.** Versions above the recommended one are reported as OK, for example KiCad 10.
@@ -287,7 +294,7 @@ A later run found a note printed twice. The two README walk-throughs found five 
 
 These are planned, not done:
 
-1. **Run the real installs** (iverilog with apt on Ubuntu; Icarus with winget on Windows). Record the results as fixtures, and fix what they show, for example a missing search path for Bleyer's Icarus folder.
+1. **More real installs:** iverilog with apt on Ubuntu, and KiCad with winget on Windows. Record the results as fixtures and fix what they show, as was done for the real winget install of Icarus.
 2. **Fresh-machine test** on a newly installed Ubuntu 24.04: empty apt package lists, a root user, and tools that are really missing.
 3. **A `configure` step (`envconfig.py`).** For example: check that `~/.nghdl/config.ini` points at an Icarus with libvvp, and add extra tool folders to PATH, with `--dry-run` and the action log.
 4. **Support eSim's own builds:** read `~/.nghdl/config.ini` to find them, and guide the user through eSim's `nghdl` installer.

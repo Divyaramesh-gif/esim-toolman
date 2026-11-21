@@ -14,9 +14,11 @@ The order of work:
 3. Print the plan. --dry-run stops here.
 4. Ask for confirmation, unless --yes was given.
 5. Run each install command, write it to the action log, and verify it by
-   re-running the tool's doctor checks. If verification fails and the
-   manifest has a fallback (GHDL: ghdl-llvm -> ghdl-gcc), show the
-   fallback, ask again, then run and verify it.
+   re-running the tool's doctor checks. Verification has three outcomes:
+   passed; installed but not on PATH (found only in one of the manifest's
+   extra folders: the doctor's command to add it to PATH is shown); or
+   failed. If it failed and the manifest has a fallback (GHDL: ghdl-llvm
+   -> ghdl-gcc), show the fallback, ask again, then run and verify it.
 
 Before step 5 only read-only commands run: the tools' version commands and
 apt's install simulation (apt-get install -s).
@@ -39,9 +41,18 @@ from esim_toolman.manifest import Manifest, Tool
 from esim_toolman.platform_info import PlatformInfo
 from esim_toolman.versions import Status, classify, extract_version
 
-EXIT_OK = 0  # everything planned was installed and verified, or nothing was needed
-EXIT_NOT_OK = 1  # something was refused, manual, declined, failed or not verified
+EXIT_OK = 0  # everything planned was installed and verified on PATH, or nothing was needed
+EXIT_NOT_OK = 1  # something was refused, manual, declined, failed, not verified, or not on PATH
 EXIT_ERROR = 2  # could not run: an unknown tool name
+
+
+class Verification(StrEnum):
+    """How verifying one install turned out. The value is what the action
+    log records."""
+
+    PASSED = "passed"  # found on PATH, no ERROR finding
+    NOT_ON_PATH = "not-on-path"  # found and working, but only in an extra folder
+    FAILED = "failed"  # not found, an ERROR finding, or the command failed
 
 
 class Action(StrEnum):
@@ -149,11 +160,15 @@ def install(
         print("Cancelled: nothing was installed.")
         return EXIT_NOT_OK
 
-    all_verified = True
-    for item in to_install:
-        if not install_one(item, backend, machine, yes=yes):
-            all_verified = False
-    return EXIT_OK if all_verified and not blocked else EXIT_NOT_OK
+    outcomes = {item.tool.name: install_one(item, backend, machine, yes=yes) for item in to_install}
+    not_on_path = [name for name, outcome in outcomes.items() if outcome is Verification.NOT_ON_PATH]
+    if not_on_path:
+        print(
+            f"\nInstalled, but not on PATH: {', '.join(not_on_path)}. Add the folder to PATH "
+            "with the command shown above, then open a new terminal."
+        )
+    all_passed = all(outcome is Verification.PASSED for outcome in outcomes.values())
+    return EXIT_OK if all_passed and not blocked else EXIT_NOT_OK
 
 
 # --------------------------------------------------------------------------
@@ -305,31 +320,41 @@ def format_plan(info: PlatformInfo, backend: Backend | None, plan: list[PlanItem
 # --------------------------------------------------------------------------
 
 
-def install_one(item: PlanItem, backend: Backend, machine: Machine, *, yes: bool) -> bool:
-    """Run one planned install and verify it. If verification fails and the
-    manifest has a fallback, offer it. True if the tool ends up verified."""
+def install_one(item: PlanItem, backend: Backend, machine: Machine, *, yes: bool) -> Verification:
+    """Run one planned install and verify it. If it fails and the manifest
+    has a fallback, offer the fallback. "Not on PATH" is not a failure (the
+    install worked), so it gets no fallback. Returns the final outcome."""
     if item.command is None:  # only INSTALL items get here, and they have a command
-        return False
-    if run_and_verify(item.tool, item.command, backend, machine):
-        return True
+        return Verification.FAILED
+    outcome = run_and_verify(item.tool, item.command, backend, machine)
+    if outcome is not Verification.FAILED:
+        return outcome
 
     fallback = backend.build(item.tool, use_fallback=True)
     if fallback is None or item.command.fallback:
-        return False
+        return Verification.FAILED
     print(f"\nThe manifest has a fallback for {item.tool.name}: {fallback.shown()}")
     detection, _, _ = tool_status(item.tool, machine)
     refusal = refusal_reason(item.tool, detection, fallback, backend, machine)
     if refusal is not None:
         print(f"Not running the fallback: {refusal}.")
-        return False
+        return Verification.FAILED
     if not confirm("Run the fallback?", machine, yes):
         print("Fallback not run.")
-        return False
+        return Verification.FAILED
     return run_and_verify(item.tool, fallback, backend, machine)
 
 
-def run_and_verify(tool: Tool, command: InstallCommand, backend: Backend, machine: Machine) -> bool:
-    """Run one install command, verify the result, and log both."""
+_HEADINGS = {
+    Verification.PASSED: "Verification passed:",
+    Verification.NOT_ON_PATH: "Installed, but not on PATH:",
+    Verification.FAILED: "Verification FAILED:",
+}
+
+
+def run_and_verify(tool: Tool, command: InstallCommand, backend: Backend, machine: Machine) -> Verification:
+    """Run one install command, verify the result, and log both. A command
+    that fails counts as FAILED (its log entry says verification "skipped")."""
     print(f"\nRunning: {command.shown()}")
     try:
         result = backend.run(command, runner=machine.runner)
@@ -341,25 +366,31 @@ def run_and_verify(tool: Tool, command: InstallCommand, backend: Backend, machin
         print(f"  Failed: {result.error}.")
         _log(tool, command, machine, result="error" if result.exit_code is None else "failed",
              exit_code=result.exit_code, verification="skipped", details=[result.error or ""])
-        return False
+        return Verification.FAILED
 
     print(f"Verifying {tool.name} ...")
-    passed, details = verify(tool, machine)
-    print(f"  Verification {'passed' if passed else 'FAILED'}:")
+    outcome, details = verify(tool, machine)
+    print(f"  {_HEADINGS[outcome]}")
     for line in details:
         print(f"    {line}")
     _log(tool, command, machine, result="ok", exit_code=result.exit_code,
-         verification="passed" if passed else "failed", details=details)
-    return passed
+         verification=outcome.value, details=details)
+    return outcome
 
 
-def verify(tool: Tool, machine: Machine) -> tuple[bool, list[str]]:
-    """Re-run the tool's doctor checks. It passes when the tool is found and
-    no finding is an ERROR. Returns (passed, what was found)."""
+def verify(tool: Tool, machine: Machine) -> tuple[Verification, list[str]]:
+    """Re-run the tool's doctor checks. Returns the outcome and what was found.
+
+    FAILED: the tool is not found, or a finding is an ERROR.
+    NOT_ON_PATH: found and without errors, but only in one of the manifest's
+        extra folders, not on PATH (the doctor's "path" finding). The details
+        then hold the doctor's exact command to add the folder to PATH.
+    PASSED: found, on PATH, without errors. Warnings are kept in the details.
+    """
     which = _which_with_fresh_path(machine)
     detection, installed, _ = tool_status(tool, machine, which)
     if not detection.found:
-        return False, [f"{tool.name} is still not found: {detection.error}."]
+        return Verification.FAILED, [f"{tool.name} is still not found: {detection.error}."]
     findings = check_tool(
         tool, machine.info,
         env=machine.env, home=machine.home, which=which,
@@ -367,9 +398,19 @@ def verify(tool: Tool, machine: Machine) -> tuple[bool, list[str]]:
     )
     errors = [f.problem for f in findings if f.severity is Severity.ERROR]
     if errors:
-        return False, errors
-    warnings = [f"warning: {f.problem}" for f in findings if f.severity is Severity.WARNING]
-    return True, [f"{tool.name} {installed or '(version unknown)'} found at {detection.path}.", *warnings]
+        return Verification.FAILED, errors
+
+    found = f"{tool.name} {installed or '(version unknown)'} found at {detection.path}."
+    warnings = [
+        f"warning: {f.problem}"
+        for f in findings
+        if f.severity is Severity.WARNING and f.check != "path"
+    ]
+    not_on_path = [f for f in findings if f.check == "path"]
+    if not_on_path:
+        fix = (not_on_path[0].fix or "").splitlines()
+        return Verification.NOT_ON_PATH, [found, not_on_path[0].problem, *fix, *warnings]
+    return Verification.PASSED, [found, *warnings]
 
 
 def confirm(question: str, machine: Machine, yes: bool) -> bool:

@@ -7,6 +7,7 @@ ever installed. The tests use the real manifest and, where they exist, real
 outputs captured on Ubuntu 24.04 (tests/fixtures/ubuntu-24.04/).
 """
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -15,11 +16,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from captured import load
+from captured import WINDOWS_11, load
 
 from esim_toolman.backends import AptBackend, WingetBackend
 from esim_toolman.installer import Action, Machine, build_plan, format_plan, install, make_machine
-from esim_toolman.manifest import load_manifest
+from esim_toolman.manifest import Manifest, SearchPaths, load_manifest
 from esim_toolman.platform_info import PlatformInfo
 from esim_toolman.versions import Status
 
@@ -88,11 +89,12 @@ class FakeComputer:
 
 
 def machine(computer: FakeComputer, tmp_path: Path, info: PlatformInfo = UBUNTU,
-            read_windows_path: Callable[[], str] = lambda: "") -> Machine:
+            read_windows_path: Callable[[], str] = lambda: "",
+            env: dict[str, str] | None = None, home: str = "/home/me") -> Machine:
     return make_machine(
         info,
-        env={"PATH": "/usr/bin"},
-        home="/home/me",
+        env={"PATH": "/usr/bin", **(env or {})},
+        home=home,
         which=computer.which,
         runner=computer.run,
         resolve=lambda path: computer.real_paths.get(path, path),
@@ -473,3 +475,103 @@ def test_without_the_stored_path_the_new_program_is_not_seen(tmp_path: Path) -> 
     computer = windows_iverilog_computer()
     stale = machine(computer, tmp_path, WINDOWS, read_windows_path=lambda: "")
     assert install(MANIFEST, stale, tool_key="iverilog", yes=True) == 1
+
+
+# ------------------------------- installed, but not on PATH (a real Windows case)
+#
+# The real install test on Windows 11 (2026-11-21): `winget install --id
+# Icarus.Verilog` exited with 0 and put Icarus in C:\iverilog\bin, but did not
+# add that folder to PATH. Verification then reported "not found". The
+# manifest now searches that folder, and the installer reports the case as
+# "installed, but not on PATH", with the command to add it.
+
+
+def icarus_in_a_folder(tmp_path: Path) -> tuple[Manifest, str]:
+    """The real iverilog entry, with its Windows search folder moved into the
+    test's temporary folder (%ROOT% stands for the system drive). Returns the
+    manifest and the folder, written the way glob reports it."""
+    (tmp_path / "iverilog" / "bin").mkdir(parents=True)
+    tool = dataclasses.replace(
+        MANIFEST.tools["iverilog"], search_paths=SearchPaths(windows=("%ROOT%/iverilog/bin",))
+    )
+    return Manifest(schema_version=1, tools={"iverilog": tool}), f"{tmp_path}/iverilog/bin"
+
+
+def winget_puts_icarus_in(computer: FakeComputer, folder: str) -> None:
+    """Running the winget command makes Icarus appear in ``folder``, answering
+    -V with the real output captured from Bleyer's build on Windows 11."""
+    winget = ("winget", "install", "--id", "Icarus.Verilog", "--exact",
+              "--accept-package-agreements", "--accept-source-agreements")
+
+    def run_install() -> tuple[str, int]:
+        computer.in_dirs[(folder, "iverilog")] = f"{folder}/iverilog.exe"
+        computer.responses[("iverilog.exe", "-V")] = load("iverilog-version", WINDOWS_11)
+        return ("", 0)
+
+    computer.responses[winget] = run_install
+
+
+def test_installed_but_not_on_path_is_reported_with_the_fix(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest, folder = icarus_in_a_folder(tmp_path)
+    computer = FakeComputer("winget")
+    winget_puts_icarus_in(computer, folder)
+    # The PATH stored in the registry does not contain the folder either.
+    on_windows = machine(computer, tmp_path, WINDOWS, env={"ROOT": str(tmp_path)})
+
+    exit_code = install(manifest, on_windows, tool_key="iverilog", yes=True)
+
+    assert exit_code == 1  # installed, but a manual step (PATH) is left
+    out = capsys.readouterr().out
+    assert "Installed, but not on PATH:" in out
+    assert "Verification FAILED" not in out
+    assert "SetEnvironmentVariable" in out and folder in out
+    assert "Installed, but not on PATH: Icarus Verilog. Add the folder to PATH" in out
+    (entry,) = log_entries(tmp_path)
+    assert (entry["result"], entry["verification"]) == ("ok", "not-on-path")
+    assert entry["details"][0] == f"Icarus Verilog 12.0 found at {folder}/iverilog.exe."
+    assert any("not on PATH" in line for line in entry["details"])
+    assert any("SetEnvironmentVariable" in line for line in entry["details"])
+
+
+def test_once_the_folder_is_on_path_verification_passes(tmp_path: Path) -> None:
+    # After the folder is added to the user's PATH (stored in the registry),
+    # the same install verifies as passed.
+    manifest, folder = icarus_in_a_folder(tmp_path)
+    computer = FakeComputer("winget")
+    winget_puts_icarus_in(computer, folder)
+    on_windows = machine(
+        computer, tmp_path, WINDOWS, env={"ROOT": str(tmp_path)}, read_windows_path=lambda: folder
+    )
+
+    assert install(manifest, on_windows, tool_key="iverilog", yes=True) == 0
+    (entry,) = log_entries(tmp_path)
+    assert entry["verification"] == "passed"
+
+
+def test_not_on_path_does_not_trigger_the_fallback(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # GHDL has a fallback (ghdl-gcc). An install that worked but is only in an
+    # extra folder must not be treated as failed.
+    (tmp_path / "ghdl" / "bin").mkdir(parents=True)
+    folder = f"{tmp_path}/ghdl/bin"
+    tool = dataclasses.replace(MANIFEST.tools["ghdl"], search_paths=SearchPaths(linux=("~/ghdl/bin",)))
+    manifest = Manifest(schema_version=1, tools={"ghdl": tool})
+    computer = FakeComputer("apt-get")
+    computer.responses[apt_simulate("ghdl-llvm")] = ("Inst ghdl-llvm (4.1.0)\n", 0)
+
+    def install_llvm() -> tuple[str, int]:
+        computer.in_dirs[(folder, "ghdl")] = f"{folder}/ghdl"
+        computer.responses[("ghdl", "--version")] = load("ghdl-version")
+        computer.responses[("ghdl", "-a", "t.vhdl")] = ("", 0)
+        computer.responses[("ghdl", "-e", "t")] = ("", 0)
+        return ("", 0)
+
+    computer.responses[apt_install("ghdl-llvm")] = install_llvm
+    exit_code = install(manifest, machine(computer, tmp_path, home=str(tmp_path)), tool_key="ghdl", yes=True)
+
+    assert exit_code == 1
+    assert computer.installs_run() == [apt_install("ghdl-llvm")]
+    assert "fallback" not in capsys.readouterr().out
+    (entry,) = log_entries(tmp_path)
+    assert entry["verification"] == "not-on-path"

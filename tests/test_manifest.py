@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from captured import load, output
+from captured import WINDOWS_11, load, output
 
 from esim_toolman.manifest import (
     CompileTestCheck,
@@ -518,6 +518,26 @@ def test_version_patterns_on_real_ubuntu_2404_output(key: str, captured_run: str
     assert run["exit_code"] == 0
     match = tool.version.pattern.search(output(captured_run))
     assert match is not None and match.group(1) == expected
+
+
+def test_iverilog_pattern_on_real_windows_output() -> None:
+    # Bleyer's Icarus build, installed by a real `winget install` on Windows 11.
+    tool = load_manifest().tools["iverilog"]
+    run = load("iverilog-version", WINDOWS_11)
+    assert run["command"][1:] == list(tool.version.args)
+    assert run["exit_code"] == 0  # -V exits with 0 on this build too
+    match = tool.version.pattern.search(output("iverilog-version", WINDOWS_11))
+    assert match is not None and match.group(1) == "12.0"
+
+
+def test_real_manifest_searches_bleyers_icarus_folder_on_windows() -> None:
+    # A real winget install put Icarus in C:\iverilog\bin and did not add it
+    # to PATH; eSim's own build is still searched first.
+    tool = load_manifest().tools["iverilog"]
+    assert tool.search_paths.windows == (
+        r"%SystemDrive%\FOSSEE\eSim\library\bin\iverilog\bin",
+        r"%SystemDrive%\iverilog\bin",
+    )
 
 
 def test_ngspice_pattern_on_esims_own_build_format() -> None:
