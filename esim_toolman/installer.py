@@ -2,13 +2,19 @@
 
 The order of work:
 
-1. Detect the selected tools, with the same rules as `status`.
-   `install --missing` selects the required tools that are NOT_FOUND or
-   TOO_OLD; `install <tool>` selects that one tool.
+1. Detect the selected tools, with the same rules as `status`. For an
+   installed tool, also run its doctor checks: a tool can be installed and
+   still broken (GHDL's llvm backend on Ubuntu 24.04 cannot compile).
+   `install <tool>` selects that one tool. `install --missing` selects the
+   required tools that are NOT_FOUND or TOO_OLD, plus every installed tool
+   (required or optional) whose checks give an ERROR.
 2. Build a plan: one action per tool.
      install  an exact command, built only from the manifest (apt or winget)
-     skip     already installed and good enough
-     manual   no package for this platform; the manifest's manual hint is shown
+     repair   an installed tool fails a check that the manifest marks
+              `repair = "fallback"`: install its apt fallback packages
+     skip     already installed, good enough, and its checks pass
+     manual   no package for this platform, or a failed check that only a
+              person can fix; the manifest's hint or fix is shown
      refuse   the package manager is missing, eSim's own build is installed,
               or apt would also install a package that conflicts with the tool
 3. Print the plan. --dry-run stops here.
@@ -20,8 +26,9 @@ The order of work:
    failed. If it failed and the manifest has a fallback (GHDL: ghdl-llvm
    -> ghdl-gcc), show the fallback, ask again, then run and verify it.
 
-Before step 5 only read-only commands run: the tools' version commands and
-apt's install simulation (apt-get install -s).
+Before step 5 only read-only commands run: the tools' version commands, the
+doctor's checks (the GHDL compile test runs in a temporary folder), and apt's
+install simulation (apt-get install -s).
 """
 
 import os
@@ -36,7 +43,7 @@ from pathlib import Path
 from esim_toolman import actionlog
 from esim_toolman.backends import Backend, InstallCommand, backend_for
 from esim_toolman.detect import DetectResult, Runner, Which, detect_tool
-from esim_toolman.doctor import Severity, check_tool, is_own_build, own_build_fix
+from esim_toolman.doctor import Finding, Severity, check_tool, is_own_build, own_build_fix
 from esim_toolman.manifest import Manifest, Tool
 from esim_toolman.platform_info import PlatformInfo
 from esim_toolman.versions import Status, classify, extract_version
@@ -59,9 +66,14 @@ class Action(StrEnum):
     """What the plan does for one tool."""
 
     INSTALL = "install"
+    REPAIR = "repair"
     SKIP = "skip"
     MANUAL = "manual"
     REFUSE = "refuse"
+
+
+# The actions that run a command.
+RUNS = (Action.INSTALL, Action.REPAIR)
 
 
 @dataclass(frozen=True)
@@ -72,8 +84,8 @@ class PlanItem:
     status: Status  # before installing
     installed: str | None  # version before installing, if found
     action: Action
-    command: InstallCommand | None = None  # set for INSTALL (and REFUSE, for reference)
-    reason: str = ""  # for SKIP, MANUAL and REFUSE: why, or what to do by hand
+    command: InstallCommand | None = None  # set for INSTALL and REPAIR (and REFUSE, for reference)
+    reason: str = ""  # REPAIR: which check failed and why; SKIP, MANUAL, REFUSE: why, or what to do
 
 
 @dataclass(frozen=True)
@@ -146,11 +158,11 @@ def install(
     print(format_plan(machine.info, backend, plan))
 
     blocked = any(item.action in (Action.MANUAL, Action.REFUSE) for item in plan)
-    to_install = [item for item in plan if item.action is Action.INSTALL]
+    to_install = [item for item in plan if item.action in RUNS]
     if dry_run:
         print("\nDry run: nothing was installed.")
         return EXIT_NOT_OK if blocked else EXIT_OK
-    if not to_install or backend is None:  # INSTALL items only exist with a backend
+    if not to_install or backend is None:  # INSTALL and REPAIR items only exist with a backend
         print("\nNothing to install.")
         return EXIT_NOT_OK if blocked else EXIT_OK
 
@@ -183,21 +195,108 @@ def build_plan(
     *,
     tool_key: str | None = None,
 ) -> list[PlanItem]:
-    """One PlanItem per selected tool: the named tool, or (with no name)
-    every required tool, where only NOT_FOUND and TOO_OLD get installed."""
+    """One PlanItem per selected tool.
+
+    With a tool name: that tool. With no name (--missing): every required
+    tool, where only NOT_FOUND and TOO_OLD get installed, plus every
+    installed tool, required or optional, whose checks give an ERROR.
+    An installed tool's checks run before anything else is decided.
+    """
     plan: list[PlanItem] = []
     for tool in manifest.tools.values():
         if tool_key is not None and tool.key != tool_key:
             continue
-        if tool_key is None and not tool.required:
-            continue
         detection, installed, status = tool_status(tool, machine)
-        if tool_key is None and status not in (Status.NOT_FOUND, Status.TOO_OLD):
-            reason = f"installed ({installed or 'version unknown'}); --missing only installs NOT_FOUND or TOO_OLD"
-            plan.append(PlanItem(tool, status, installed, Action.SKIP, reason=reason))
+        installed_ok = detection.found and status not in (Status.NOT_FOUND, Status.TOO_OLD)
+        broken = failed_checks(tool, machine) if installed_ok else []
+        if broken:
+            plan.append(repair_item(tool, detection, installed, status, broken, backend, machine))
             continue
+        if tool_key is None:  # --missing
+            if not tool.required:
+                continue
+            if status not in (Status.NOT_FOUND, Status.TOO_OLD):
+                reason = (
+                    f"installed ({installed or 'version unknown'}), its checks find no ERROR; "
+                    "--missing only installs NOT_FOUND or TOO_OLD"
+                )
+                plan.append(PlanItem(tool, status, installed, Action.SKIP, reason=reason))
+                continue
         plan.append(plan_item(tool, detection, installed, status, backend, machine))
     return plan
+
+
+def failed_checks(tool: Tool, machine: Machine) -> list[Finding]:
+    """The ERROR findings from the tool's doctor checks (the same checks
+    `doctor` runs), not counting the version, which the plan judges itself."""
+    findings = check_tool(
+        tool, machine.info,
+        env=machine.env, home=machine.home, which=machine.which,
+        runner=machine.runner, resolve=machine.resolve,
+    )
+    return [f for f in findings if f.severity is Severity.ERROR and f.check != "installed"]
+
+
+# How a failed check is named in the plan.
+_FAILED = {
+    "compile_test": "compile test failed",
+    "output_excludes": "output check failed",
+    "apt_conflict": "conflicting package installed",
+}
+
+
+def describe_failure(finding: Finding) -> str:
+    """A short reason for the plan, e.g. "compile test failed: `ghdl -a
+    t.vhdl` exited with code 3: ...libLLVM-18.so.18.1: cannot open ..."."""
+    label = _FAILED.get(finding.check, f"{finding.check} failed")
+    return f"{label}: {finding.cause or finding.problem}"
+
+
+def repair_item(
+    tool: Tool,
+    detection: DetectResult,
+    installed: str | None,
+    status: Status,
+    broken: list[Finding],
+    backend: Backend | None,
+    machine: Machine,
+) -> PlanItem:
+    """Plan for an installed tool whose checks give an ERROR.
+
+    It becomes REPAIR only if every failed check is marked `repair =
+    "fallback"` in the manifest, the fallback packages are not installed
+    yet, and installing them passes the same safety rules as an install.
+    Otherwise it is MANUAL, with the checks' own fixes, or REFUSE.
+    """
+    cause = "; ".join(describe_failure(f) for f in broken)
+
+    def item(action: Action, command: InstallCommand | None = None, reason: str = cause) -> PlanItem:
+        return PlanItem(tool, status, installed, action, command, reason)
+
+    def by_hand(why: str = "") -> PlanItem:
+        fixes = " / ".join(" ".join(f.fix.splitlines()) for f in broken if f.fix)
+        return item(Action.MANUAL, reason=f"{cause}.{why} Fix by hand: {fixes}")
+
+    if any(f.repair != "fallback" for f in broken):
+        return by_hand()
+    if backend is None:
+        return by_hand(f" esim-toolman has no package manager for {machine.info.system}.")
+    if not machine.which(backend.program):
+        return item(Action.REFUSE, reason=f"{cause}; {backend.program} was not found on PATH")
+    command = backend.build(tool, use_fallback=True)
+    if command is None:
+        return by_hand(f" The manifest has no {backend.name} fallback to repair it with.")
+
+    would_install, error = backend.would_install(command, runner=machine.runner, env=machine.env)
+    if error is not None:
+        return item(Action.REFUSE, command, f"{cause}; could not check what {backend.name} would install ({error})")
+    if would_install is not None and not set(command.packages) & would_install:
+        packages = ", ".join(command.packages)
+        return by_hand(f" Its fallback ({packages}) is already installed, so installing it again would not help.")
+    refusal = refusal_reason(tool, detection, command, backend, machine)
+    if refusal is not None:
+        return item(Action.REFUSE, command, f"{cause}; {refusal}")
+    return item(Action.REPAIR, command)
 
 
 def plan_item(
@@ -288,7 +387,8 @@ def tool_status(tool: Tool, machine: Machine, which: Which | None = None) -> tup
 
 def format_plan(info: PlatformInfo, backend: Backend | None, plan: list[PlanItem]) -> str:
     """The plan as a table: tool, status, action, backend, and the exact
-    command (for install) or the reason (for skip, manual and refuse)."""
+    command (for install and repair) or the reason (for skip, manual and
+    refuse). Why each repair is needed is listed under the table."""
     manager = f"{backend.name} ({backend.program})" if backend else "none"
     lines = [f"Platform: {info.describe()}", f"Package manager: {manager}", "", "Install plan:"]
     header = ("TOOL", "STATUS", "ACTION", "BACKEND", "COMMAND OR REASON")
@@ -297,8 +397,8 @@ def format_plan(info: PlatformInfo, backend: Backend | None, plan: list[PlanItem
             item.tool.name + (" *" if item.tool.required else ""),
             item.status.value,
             item.action.value,
-            item.command.backend if item.action is Action.INSTALL and item.command else "-",
-            item.command.shown() if item.action is Action.INSTALL and item.command else item.reason,
+            item.command.backend if item.action in RUNS and item.command else "-",
+            item.command.shown() if item.action in RUNS and item.command else item.reason,
         )
         for item in plan
     ]
@@ -306,11 +406,17 @@ def format_plan(info: PlatformInfo, backend: Backend | None, plan: list[PlanItem
     for row in (header, *rows):
         padded = [cell.ljust(width) for cell, width in zip(row, widths)]
         lines.append("  " + "  ".join([*padded, row[-1]]).rstrip())
+    repairs = [item for item in plan if item.action is Action.REPAIR]
+    if repairs:
+        lines.append("")
+        lines.append("Why repair:")
+        lines += [f"  {item.tool.name}: {item.reason}" for item in repairs]
     counts = {action: sum(item.action is action for item in plan) for action in Action}
     lines.append("")
     lines.append(
-        f"{counts[Action.INSTALL]} to install, {counts[Action.MANUAL]} manual, "
-        f"{counts[Action.REFUSE]} refused, {counts[Action.SKIP]} skipped. (* required)"
+        f"{counts[Action.INSTALL]} to install, {counts[Action.REPAIR]} to repair, "
+        f"{counts[Action.MANUAL]} manual, {counts[Action.REFUSE]} refused, "
+        f"{counts[Action.SKIP]} skipped. (* required)"
     )
     return "\n".join(lines)
 
@@ -321,11 +427,14 @@ def format_plan(info: PlatformInfo, backend: Backend | None, plan: list[PlanItem
 
 
 def install_one(item: PlanItem, backend: Backend, machine: Machine, *, yes: bool) -> Verification:
-    """Run one planned install and verify it. If it fails and the manifest
-    has a fallback, offer the fallback. "Not on PATH" is not a failure (the
-    install worked), so it gets no fallback. Returns the final outcome."""
-    if item.command is None:  # only INSTALL items get here, and they have a command
+    """Run one planned install or repair and verify it. If an install fails
+    and the manifest has a fallback, offer the fallback. A repair already is
+    the fallback, so it gets no second try. "Not on PATH" is not a failure
+    (the install worked), so it gets no fallback. Returns the final outcome."""
+    if item.command is None:  # only INSTALL and REPAIR items get here, and they have a command
         return Verification.FAILED
+    if item.action is Action.REPAIR:
+        return run_and_verify(item.tool, item.command, backend, machine, action="repair")
     outcome = run_and_verify(item.tool, item.command, backend, machine)
     if outcome is not Verification.FAILED:
         return outcome
@@ -352,19 +461,30 @@ _HEADINGS = {
 }
 
 
-def run_and_verify(tool: Tool, command: InstallCommand, backend: Backend, machine: Machine) -> Verification:
+def run_and_verify(
+    tool: Tool,
+    command: InstallCommand,
+    backend: Backend,
+    machine: Machine,
+    *,
+    action: str | None = None,
+) -> Verification:
     """Run one install command, verify the result, and log both. A command
-    that fails counts as FAILED (its log entry says verification "skipped")."""
+    that fails counts as FAILED (its log entry says verification "skipped").
+    `action` names the log entry; by default "install", or
+    "install-fallback" for a fallback command."""
+    action = action or ("install-fallback" if command.fallback else "install")
     print(f"\nRunning: {command.shown()}")
     try:
         result = backend.run(command, runner=machine.runner)
     except KeyboardInterrupt:
-        _log(tool, command, machine, result="interrupted", exit_code=None,
+        _log(tool, command, machine, action=action, result="interrupted", exit_code=None,
              verification="skipped", details=["stopped with Ctrl+C"])
         raise
     if result.problem is not None:
         print(f"  Failed: {result.error}.")
-        _log(tool, command, machine, result="error" if result.exit_code is None else "failed",
+        _log(tool, command, machine, action=action,
+             result="error" if result.exit_code is None else "failed",
              exit_code=result.exit_code, verification="skipped", details=[result.error or ""])
         return Verification.FAILED
 
@@ -373,7 +493,7 @@ def run_and_verify(tool: Tool, command: InstallCommand, backend: Backend, machin
     print(f"  {_HEADINGS[outcome]}")
     for line in details:
         print(f"    {line}")
-    _log(tool, command, machine, result="ok", exit_code=result.exit_code,
+    _log(tool, command, machine, action=action, result="ok", exit_code=result.exit_code,
          verification=outcome.value, details=details)
     return outcome
 
@@ -381,7 +501,8 @@ def run_and_verify(tool: Tool, command: InstallCommand, backend: Backend, machin
 def verify(tool: Tool, machine: Machine) -> tuple[Verification, list[str]]:
     """Re-run the tool's doctor checks. Returns the outcome and what was found.
 
-    FAILED: the tool is not found, or a finding is an ERROR.
+    FAILED: the tool is not found, or a finding is an ERROR. The details
+        then hold each ERROR's problem and the doctor's fix for it.
     NOT_ON_PATH: found and without errors, but only in one of the manifest's
         extra folders, not on PATH (the doctor's "path" finding). The details
         then hold the doctor's exact command to add the folder to PATH.
@@ -396,7 +517,12 @@ def verify(tool: Tool, machine: Machine) -> tuple[Verification, list[str]]:
         env=machine.env, home=machine.home, which=which,
         runner=machine.runner, resolve=machine.resolve,
     )
-    errors = [f.problem for f in findings if f.severity is Severity.ERROR]
+    errors = [
+        line
+        for f in findings
+        if f.severity is Severity.ERROR
+        for line in [f.problem, *(f"fix: {fix}" for fix in (f.fix or "").splitlines())]
+    ]
     if errors:
         return Verification.FAILED, errors
 
@@ -432,6 +558,7 @@ def _log(
     command: InstallCommand,
     machine: Machine,
     *,
+    action: str,
     result: str,
     exit_code: int | None,
     verification: str,
@@ -439,7 +566,7 @@ def _log(
 ) -> None:
     actionlog.append(
         tool=tool.key,
-        action="install-fallback" if command.fallback else "install",
+        action=action,
         backend=command.backend,
         command=command.command,
         result=result,

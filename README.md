@@ -10,7 +10,7 @@ Built for the FOSSEE Winter Internship 2026, Screening Task 5.
 |---|---|---|
 | `status` | Is each tool installed, which version, is that version OK for eSim? | No |
 | `doctor` | Finds problems and says how to fix each one on this computer | No |
-| `install` | Installs a tool, or every missing required tool, after showing a plan and asking | Yes (with your confirmation) |
+| `install` | Installs a tool, or every missing required tool, and repairs an installed tool that fails a `doctor` check; it shows a plan and asks first | Yes (with your confirmation) |
 | `log` | Shows what `install` has run | No |
 
 All tool data (program names, versions, packages, checks) lives in
@@ -131,9 +131,11 @@ Each problem is an `ERROR` or a `WARNING`. It names the eSim features it breaks,
 GHDL
   ERROR    GHDL is installed but cannot compile VHDL (known for ghdl-llvm on Ubuntu 24.04), so VHDL co-simulation hangs. `ghdl -a t.vhdl` exited with code 3. Output: /usr/lib/ghdl/llvm/ghdl1-llvm: error while loading shared libraries: libLLVM-18.so.18.1: cannot open shared object file: No such file or directory | /usr/bin/ghdl-llvm:error: exec error
            Breaks: vhdl-cosim
-           Fix: Switch to the gcc backend: install ghdl-gcc.
+           Fix: Switch to the gcc backend: install ghdl-gcc. On Ubuntu, also unset GHDL_BACKEND if it is set to llvm.
                 sudo apt-get install ghdl-gcc
 ```
+
+`install` repairs this one for you (see below).
 
 The last line of the report counts the findings, for example `1 error, 5 warnings, 10 OK`.
 
@@ -149,11 +151,11 @@ python3 -m esim_toolman install --missing --yes
 ```
 
 - `install <tool>` installs one tool. The tool names are `ngspice`, `kicad`, `ghdl`, `verilator` and `iverilog`.
-- `install --missing` installs every required tool (ngspice, KiCad) that is `NOT_FOUND` or `TOO_OLD`.
+- `install --missing` installs every required tool (ngspice, KiCad) that is `NOT_FOUND` or `TOO_OLD`. It also includes every installed tool, required or optional, that fails a `doctor` check with an `ERROR`.
 - `--dry-run` only prints the plan.
 - `--yes` (or `-y`) skips the question.
 
-First, `install` prints a plan with one line per tool: an exact command to run, or the reason it won't run one. Real `install --dry-run --missing` output on Windows 11 with no tools installed:
+First, `install` prints a plan with one line per tool: an exact command to run, or the reason it won't run one. Real `install --dry-run --missing` output on Windows 11, where ngspice and KiCad are not installed:
 
 ```
 Platform: Windows
@@ -164,10 +166,30 @@ Install plan:
   Ngspice *  NOT_FOUND  manual   -        No winget package. Install eSim for Windows (it bundles ngspice), or download the official Windows build from https://ngspice.sourceforge.io/download.html and add its bin folder to PATH.
   KiCad *    NOT_FOUND  install  winget   winget install --id KiCad.KiCad --exact --version 9.0.3 --accept-package-agreements --accept-source-agreements
 
-1 to install, 1 manual, 0 refused, 0 skipped. (* required)
+1 to install, 0 to repair, 1 manual, 0 refused, 0 skipped. (* required)
 
 Dry run: nothing was installed.
 ```
+
+A tool can be installed and still broken. For an installed tool, `install` also runs that tool's `doctor` checks. Real `install ghdl --dry-run` output on Ubuntu 24.04, where `ghdl-llvm` is installed but cannot compile (the `doctor` error above):
+
+```
+Platform: Linux (Ubuntu 24.04.5 LTS)
+Package manager: apt (apt-get)
+
+Install plan:
+  TOOL  STATUS  ACTION  BACKEND  COMMAND OR REASON
+  GHDL  OK      repair  apt      sudo apt-get install -y ghdl-gcc
+
+Why repair:
+  GHDL: compile test failed: `ghdl -a t.vhdl` exited with code 3: /usr/lib/ghdl/llvm/ghdl1-llvm: error while loading shared libraries: libLLVM-18.so.18.1: cannot open shared object file: No such file or directory
+
+0 to install, 1 to repair, 0 manual, 0 refused, 0 skipped. (* required)
+
+Dry run: nothing was installed.
+```
+
+A failed check becomes `repair` only if the manifest marks it `repair = "fallback"`: the repair installs the tool's apt fallback packages, here `ghdl-gcc`. On Ubuntu, `/usr/bin/ghdl` is a script that prefers `ghdl-gcc` over `ghdl-llvm` once both are installed, unless the `GHDL_BACKEND` environment variable says otherwise. Any other failed check (for example GHDL using the mcode backend) is shown as `manual`, with the `doctor`'s fix; esim-toolman does not run those fixes. The repair itself has not been run for real yet (see [What has been tested](#what-has-been-tested)).
 
 What happens after the plan:
 
@@ -180,12 +202,14 @@ What happens after the plan:
    - the package manager is missing;
    - eSim's own build of the tool is installed (installing the package would replace it);
    - apt's simulation (`apt-get install -s`, which changes nothing) shows the install would also bring in a conflicting package, such as `ghdl-mcode` for GHDL.
+
+   The same rules apply to a repair. If the simulation shows the fallback packages are already installed, the plan says `manual` instead, because installing them again would change nothing.
 3. **It asks** `Run the N install commands above? [y/N]`. Only `y` or `yes` counts as yes.
 4. **It runs each command,** with apt's or winget's own output on screen, then **verifies** the result by re-running that tool's `doctor` checks. There are three possible results:
    - **passed;**
    - **installed, but not on PATH:** the tool was found only in one of the manifest's extra folders. This happened in a real test: winget installed Icarus Verilog into `C:\iverilog\bin` without adding that folder to PATH. esim-toolman prints the command to add it;
    - **failed.**
-5. **If verification fails** and the manifest has a fallback (GHDL: `ghdl-llvm`, then `ghdl-gcc`), it offers the fallback, and asks again.
+5. **If verification fails** and the manifest has a fallback (GHDL: `ghdl-llvm`, then `ghdl-gcc`), it offers the fallback, and asks again. A repair already is the fallback, so a repair that fails verification gets no second try; the verification lines show the `doctor`'s fix.
 
 On a new Ubuntu system, run `sudo apt-get update` once before installing; esim-toolman does not run it.
 
@@ -200,7 +224,7 @@ python3 -m esim_toolman log -n 5
 
 Every command that `install` actually ran is added as one JSON line to `~/.esim-toolman/actions.log` (on Windows, `C:\Users\<you>\.esim-toolman\actions.log`). Each line holds:
 
-- the time, the tool and the command;
+- the time, the tool, the action (`install`, `install-fallback` or `repair`) and the command;
 - the result and exit code;
 - the verification result, with what it found.
 
@@ -265,7 +289,7 @@ esim_toolman/
   detect.py         finds each program and runs its version command
   versions.py       reads and compares versions
   doctor.py         the checks behind `doctor` (also used by `install` to verify)
-  installer.py      the install plan, confirmation, verification and fallback
+  installer.py      the install plan (installs and repairs), confirmation, verification and fallback
   backends/         apt and winget: turning manifest data into commands
   actionlog.py      ~/.esim-toolman/actions.log
 manifest/tools.toml the tools, versions, packages and checks, with sources

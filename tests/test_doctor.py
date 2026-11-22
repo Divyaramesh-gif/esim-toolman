@@ -471,9 +471,15 @@ def test_ghdl_installs_but_cannot_compile() -> None:
     assert finding.breaks == ("vhdl-cosim",)
     assert finding.fix is not None
     assert finding.fix.splitlines() == [
-        "Switch to the gcc backend: install ghdl-gcc.",
+        "Switch to the gcc backend: install ghdl-gcc. On Ubuntu, also unset GHDL_BACKEND if it is set to llvm.",
         "sudo apt-get install ghdl-gcc",
     ]
+    # The short reason `install` shows in its plan: the command and the
+    # first line of its output.
+    assert finding.cause is not None
+    assert finding.cause.startswith("`ghdl -a t.vhdl` exited with code 3: ")
+    assert "libLLVM-18.so.18.1: cannot open shared object file" in finding.cause
+    assert finding.repair == "fallback"
     # The test file was written into the temporary folder ...
     assert seen["file"] == "entity t is end t;\narchitecture a of t is begin end a;\n"
     # ... which is gone afterwards.
@@ -775,4 +781,6 @@ def test_finding_to_dict() -> None:
         "problem": "broken",
         "breaks": ["vhdl-cosim"],
         "fix": "fix it",
+        "cause": None,
+        "repair": None,
     }

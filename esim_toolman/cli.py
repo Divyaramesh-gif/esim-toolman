@@ -5,7 +5,7 @@
   doctor   diagnoses problems and suggests a fix for this platform.
            Read-only. Exit code 1 if there is any ERROR finding, otherwise 0.
   install  `install <tool>` or `install --missing`: shows a plan, asks,
-           installs, verifies (see installer.py). --dry-run only shows the
+           installs or repairs, verifies (see installer.py). --dry-run only shows the
            plan. Exit code 0 if everything planned was installed and verified.
   log      prints the last actions from the action log.
 
@@ -299,14 +299,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     install = commands.add_parser(
         "install",
-        help="install a tool, or every missing required tool, after showing a plan",
+        help="install a tool, or every missing required tool, and repair installed tools "
+        "that fail a doctor check; shows a plan first",
     )
     target = install.add_mutually_exclusive_group(required=True)
     target.add_argument("tool", nargs="?", help="the tool to install, e.g. iverilog")
     target.add_argument(
         "--missing",
         action="store_true",
-        help="install every required tool that is NOT_FOUND or TOO_OLD",
+        help="install every required tool that is NOT_FOUND or TOO_OLD, and repair every "
+        "installed tool whose doctor checks give an ERROR",
     )
     install.add_argument(
         "--dry-run", action="store_true", help="only print the plan; run nothing"

@@ -96,7 +96,9 @@ class WingetInstall:
 
 
 # Every check has `problem` and `fix` (plain words, any platform) and may add
-# `fix_linux` / `fix_windows`: the exact command for that platform.
+# `fix_linux` / `fix_windows`: the exact command for that platform, and
+# `repair`: how `install` may repair a failed check. The only value is
+# "fallback": install the tool's apt fallback packages.
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,7 @@ class OutputExcludesCheck:
     ignore_case: bool = False
     fix_linux: str | None = None
     fix_windows: str | None = None
+    repair: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,7 @@ class CompileTestCheck:
     source: str
     fix_linux: str | None = None
     fix_windows: str | None = None
+    repair: str | None = None
 
 
 @dataclass(frozen=True)
@@ -144,6 +148,7 @@ class OwnBuildCheck:
     source: str
     fix_linux: str | None = None
     fix_windows: str | None = None
+    repair: str | None = None
 
 
 Check = OutputExcludesCheck | CompileTestCheck | OwnBuildCheck
@@ -256,6 +261,13 @@ def _parse_tool(key: str, raw: dict[str, Any]) -> Tool:
         optional={"needed_for", "search_paths", "install", "checks"},
     )
     apt, winget = _parse_install(raw.get("install", {}), f"{where}.install")
+    checks = _parse_checks(raw.get("checks", []), f"{where}.checks")
+    # A check that is repaired with the fallback needs fallback packages.
+    for index, check in enumerate(checks):
+        if check.repair == "fallback" and (apt is None or not apt.fallback):
+            raise ManifestError(
+                f"{where}.checks[{index}].repair: 'fallback' needs install.apt.fallback packages"
+            )
     return Tool(
         key=key,
         name=_str(raw["name"], f"{where}.name"),
@@ -273,7 +285,7 @@ def _parse_tool(key: str, raw: dict[str, Any]) -> Tool:
         search_paths=_parse_search_paths(raw.get("search_paths", {}), f"{where}.search_paths"),
         apt=apt,
         winget=winget,
-        checks=_parse_checks(raw.get("checks", []), f"{where}.checks"),
+        checks=checks,
     )
 
 
@@ -402,8 +414,12 @@ def _parse_checks(value: Any, where: str) -> tuple[Check, ...]:
     return tuple(_parse_check(item, f"{where}[{index}]") for index, item in enumerate(value))
 
 
+# How `install` may repair a failed check: only by installing the fallback.
+_REPAIRS = ("fallback",)
+
 # For each check kind: the keys it needs and the keys it may have, on top of
-# the keys every check shares (kind, problem, fix, source, fix_linux, fix_windows).
+# the keys every check shares (kind, problem, fix, source, fix_linux,
+# fix_windows, repair).
 _CHECK_KEYS: dict[str, tuple[set[str], set[str]]] = {
     OutputExcludesCheck.kind: ({"args", "text"}, {"ignore_case"}),
     CompileTestCheck.kind: ({"files", "commands"}, set()),
@@ -425,14 +441,20 @@ def _parse_check(value: Any, where: str) -> Check:
     _check_keys(
         table, where,
         required={"kind", "problem", "fix", "source"} | kind_required,
-        optional={"fix_linux", "fix_windows"} | kind_optional,
+        optional={"fix_linux", "fix_windows", "repair"} | kind_optional,
     )
+    repair = _optional_str(table, "repair", where)
+    if repair is not None and repair not in _REPAIRS:
+        raise ManifestError(
+            f"{where}.repair: unknown repair {repair!r} (known: {', '.join(_REPAIRS)})"
+        )
     shared: dict[str, Any] = {
         "problem": _str(table["problem"], f"{where}.problem"),
         "fix": _str(table["fix"], f"{where}.fix"),
         "source": _str(table["source"], f"{where}.source"),
         "fix_linux": _optional_str(table, "fix_linux", where),
         "fix_windows": _optional_str(table, "fix_windows", where),
+        "repair": repair,
     }
 
     if kind == OutputExcludesCheck.kind:

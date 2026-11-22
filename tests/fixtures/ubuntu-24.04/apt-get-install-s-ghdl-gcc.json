@@ -1,0 +1,14 @@
+{
+  "command": [
+    "apt-get",
+    "install",
+    "-s",
+    "ghdl-gcc"
+  ],
+  "exit_code": 0,
+  "stdout": "NOTE: This is only a simulation!\n      apt-get needs root privileges for real execution.\n      Keep also in mind that locking is deactivated,\n      so don't depend on the relevance to the real current situation!\nReading package lists...\nBuilding dependency tree...\nReading state information...\nThe following NEW packages will be installed:\n  ghdl-gcc\n0 upgraded, 1 newly installed, 0 to remove and 84 not upgraded.\nInst ghdl-gcc (4.1.0+dfsg-0ubuntu2.1 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [amd64])\nConf ghdl-gcc (4.1.0+dfsg-0ubuntu2.1 Ubuntu:24.04/noble-updates, Ubuntu:24.04/noble-security [amd64])\n",
+  "stderr": "",
+  "env": {
+    "LC_ALL": "C"
+  }
+}

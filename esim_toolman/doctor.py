@@ -87,6 +87,8 @@ class Finding:
     problem: str  # plain words; for OK, what was confirmed
     breaks: tuple[str, ...] = ()  # eSim features that will not work
     fix: str | None = None  # what to do on this platform; lines separated by "\n"
+    cause: str | None = None  # for a failed check: the short technical reason
+    repair: str | None = None  # for a failed check: the manifest's `repair` ("fallback")
 
     def to_dict(self) -> dict[str, object]:
         """The finding as plain values, for JSON output."""
@@ -98,6 +100,8 @@ class Finding:
             "problem": self.problem,
             "breaks": list(self.breaks),
             "fix": self.fix,
+            "cause": self.cause,
+            "repair": self.repair,
         }
 
 
@@ -433,6 +437,7 @@ def _output_excludes(tool: Tool, check: OutputExcludesCheck, path: str, ctx: _Co
             tool.key, tool.name, Severity.ERROR, check.kind,
             f"{_sentence(check.problem)} (`{shown}` mentions \"{check.text}\".)",
             tool.needed_for, check_fix(check, ctx.info),
+            cause=f"`{shown}` mentions \"{check.text}\"", repair=check.repair,
         )
     return Finding(
         tool.key, tool.name, Severity.OK, check.kind,
@@ -455,9 +460,12 @@ def _compile_test(tool: Tool, check: CompileTestCheck, path: str, ctx: _Context)
                 problem = f"{_sentence(check.problem)} {result.error}."
                 if excerpt:
                     problem += f" Output: {excerpt}"
+                first_line = next((line.strip() for line in result.output.splitlines() if line.strip()), "")
                 return Finding(
                     tool.key, tool.name, Severity.ERROR, check.kind, problem,
                     tool.needed_for, check_fix(check, ctx.info),
+                    cause=f"{result.error}: {first_line}" if first_line else result.error,
+                    repair=check.repair,
                 )
     files = ", ".join(name for name, _ in check.files)
     return Finding(
@@ -612,6 +620,7 @@ def _apt_conflicts(tool: Tool, ctx: _Context) -> list[Finding]:
                     tool.key, tool.name, Severity.ERROR, "apt_conflict",
                     f"The apt package {package} is installed, and it conflicts with {tool.name}.",
                     tool.needed_for, _with_note(f"sudo apt-get purge {package}", tool.apt.note),
+                    cause=f"{package} is installed",
                 )
             )
         else:

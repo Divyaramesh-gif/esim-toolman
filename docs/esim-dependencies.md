@@ -203,6 +203,28 @@ What esim-toolman got wrong on this machine at first, each now fixed with a test
 4. **The ngspice note showed users a rule meant for esim-toolman's developers.** Fix: the rule moved into a TOML comment.
 5. **The missing KiCad library packages went unnoticed.** Fix: on Linux the doctor now checks that every apt package in the manifest is installed (or the fallback set). The check is skipped for eSim's own builds.
 
+### Ubuntu 24.04.5 LTS under WSL2, 2026-11-22: `install` ignored a failed check
+
+The same machine. `doctor` reported GHDL's compile test as an ERROR, but `install ghdl --dry-run` planned `skip`, "already installed: 4.1.0 at /usr/bin/ghdl". The installer looked only at the version.
+
+**How Ubuntu picks GHDL's backend.** Checked on this machine with read-only commands, so the repair would not rest on a guess:
+
+- `/usr/bin/ghdl` is a 20-line `/bin/sh` script. `dpkg -S /usr/bin/ghdl` says it belongs to `ghdl-common`.
+- It is not managed by `update-alternatives`: `update-alternatives --display ghdl` answers "no alternatives for ghdl".
+- The script runs `/usr/bin/ghdl-$GHDL_BACKEND` if that program exists. Otherwise it runs the first of `/usr/bin/ghdl-mcode`, `/usr/bin/ghdl-gcc` and `/usr/bin/ghdl-llvm` that exists, in that order.
+- `GHDL_BACKEND` was not set, and only `/usr/bin/ghdl-llvm` existed.
+- `ghdl-gcc` installs `/usr/bin/ghdl-gcc` (its file list for noble-updates on packages.ubuntu.com).
+- `LC_ALL=C apt-get install -s ghdl-gcc` (a simulation, no root) would install only `ghdl-gcc` (version `4.1.0+dfsg-0ubuntu2.1`) and no `ghdl-mcode`. It is saved as `tests/fixtures/ubuntu-24.04/apt-get-install-s-ghdl-gcc.json`.
+
+So after `apt-get install ghdl-gcc`, plain `ghdl` runs the gcc backend, with no switch to flip. The exception is `GHDL_BACKEND=llvm`, which keeps the broken llvm backend.
+
+Fixes, with tests:
+
+- `install` now runs the doctor's checks for an installed tool. A failed check that the manifest marks `repair = "fallback"` (GHDL's compile test) becomes a `repair` action, which installs the apt fallback (`sudo apt-get install -y ghdl-gcc`). The reason is shown under the plan. `install --missing` includes such tools too.
+- The check's fix now also says to unset `GHDL_BACKEND` if it is `llvm`.
+
+After the fix, `install ghdl --dry-run` and `install --missing --dry-run` both plan `repair  apt  sudo apt-get install -y ghdl-gcc`, with the reason "compile test failed: `ghdl -a t.vhdl` exited with code 3: ... libLLVM-18.so.18.1: cannot open shared object file ...". The repair itself has not been run yet: it needs `sudo`, so it is left to the author to run.
+
 ### Windows 11, a real install of Icarus Verilog with winget, 2026-11-21
 
 The first real install with esim-toolman. The author ran `python -m esim_toolman install iverilog` on Windows 11. The action log (`C:\Users\<you>\.esim-toolman\actions.log`) recorded two attempts, both running `winget install --id Icarus.Verilog --exact --accept-package-agreements --accept-source-agreements`:

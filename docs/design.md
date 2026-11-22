@@ -3,7 +3,7 @@
 esim-toolman checks, diagnoses and installs the external tools that
 [eSim](https://esim.fossee.in/) needs (ngspice, KiCad, GHDL, Verilator and
 Icarus Verilog) on Ubuntu (apt) and Windows (winget). This document describes
-the code as it is on 2026-11-20. It covers only what is implemented; where
+the code as it is on 2026-11-22. It covers only what is implemented; where
 something is implemented but not yet verified on a real system, it says so.
 
 Contents: 1. Problem · 2. What the tool does · 3. Architecture · 4. Modules · 5. Design decisions · 6. Requirements coverage · 7. Testing · 8. Known limitations · 9. Future work
@@ -26,7 +26,8 @@ real output it comes from.
   server. On Ubuntu 24.04, `ghdl-llvm` installs and
   reports its version, but cannot compile: on 2026-11-20 `ghdl -a t.vhdl`
   exited with code 3 (`libLLVM-18.so.18.1: cannot open shared object file`).
-  A version check alone reports this GHDL as fine.
+  A version check alone reports this GHDL as fine. Until 2026-11-22,
+  esim-toolman's own `install` made the same mistake (see decision 8).
 - **Icarus Verilog without libvvp.** Ubuntu's `iverilog` package ships no
   libvvp (checked with `dpkg -L iverilog`), so eSim's d_cosim co-simulation
   cannot use it, although the Verilog Verifier can.
@@ -69,7 +70,7 @@ real output it comes from.
 |---|---|---|
 | `status [--json]` | For each tool: found or not, its version, and how that version compares with eSim's minimum and recommended versions | No |
 | `doctor [--json]` | Finds problems like the ones in section 1 and gives a fix for this platform | No |
-| `install <tool>` / `install --missing` | Shows a plan, asks, installs with apt or winget, verifies, offers a fallback | Yes, after confirmation; `--dry-run` only shows the plan |
+| `install <tool>` / `install --missing` | Shows a plan, asks, installs (or repairs an installed tool that fails a check) with apt or winget, verifies, offers a fallback | Yes, after confirmation; `--dry-run` only shows the plan |
 | `log [-n N]` | Shows the commands `install` ran | No |
 
 ## 3. Architecture
@@ -96,7 +97,7 @@ real output it comes from.
      |    |    |    |     \--> actionlog.py        +---------------+
      |    |    |    |          (~/.esim-toolman/actions.log)
      |    v    |    v
-     |  +-------------+   check_tool() for verification
+     |  +-------------+   check_tool(): planning and verification
      |  |  doctor.py  |<--------------------------------
      |  +-------------+
      |    |
@@ -117,9 +118,9 @@ for the command.
 
 - `status` uses `detect.py` and `versions.py` directly.
 - `doctor` adds the manifest's checks and the apt checks.
-- `install` builds on all of them: it uses detection to decide what to do,
-  backends to build the commands, and `doctor.check_tool()` to verify the
-  result. It writes every command it runs to the action log.
+- `install` builds on all of them: it uses detection and
+  `doctor.check_tool()` to decide what to do, backends to build the
+  commands, and `doctor.check_tool()` again to verify the result. It writes every command it runs to the action log.
 
 Every place where the program meets the computer (finding programs, running
 commands, the symlink resolver, reading the keyboard, the registry) is either
@@ -136,7 +137,7 @@ this to replace them with fakes.
 | `detect.py` | Finds a tool's program: first in the manifest's extra folders (with `~`, `%VAR%`, `${VAR}` and `*` expanded), then on PATH. Runs its version command. `run_command()` runs any command as an argument list, never through a shell, with stdin closed and a time limit. | One safe way to start programs, shared by the doctor and the apt backend. |
 | `doctor.py` | Turns detection, versions, the manifest's checks and (on Linux) `dpkg-query`/`apt-cache` answers into findings. Each finding has a severity, the problem, the eSim features it breaks, and a fix for this platform. | Diagnosis is separate from installing, so it can stay read-only and be reused to verify installs. |
 | `backends/` | `base.py` defines one interface: build a command from the manifest, run it, and (apt only) simulate what it would install. `apt.py` builds `sudo apt-get install -y <packages>`; `winget.py` builds `winget install --id <id> --exact [--version <v>] --accept-package-agreements --accept-source-agreements`. | Package managers differ; the installer only knows the interface. |
-| `installer.py` | Builds the install plan, prints it, asks, runs each command, verifies it with the doctor's checks (passed; installed but not on PATH; failed), offers the manifest's fallback after a failure, and logs every command it ran. | The only module that changes the system, kept apart so its safety rules sit in one place. |
+| `installer.py` | Builds the install plan (for an installed tool it also runs the doctor's checks, and plans a repair when one fails), prints it, asks, runs each command, verifies it with the doctor's checks (passed; installed but not on PATH; failed), offers the manifest's fallback after a failure, and logs every command it ran. | The only module that changes the system, kept apart so its safety rules sit in one place. |
 | `actionlog.py` | Appends one JSON line per command run to `~/.esim-toolman/actions.log`; reads back the last N. | An audit trail that survives the program. |
 | `cli.py`, `__main__.py` | Arguments, output formats (text and JSON) and exit codes. | Keeps printing and argument handling out of the logic. |
 
@@ -148,7 +149,7 @@ this to replace them with fakes.
   - Tools and versions change more often than code.
   - Every number can be traced to eSim's source or a real output.
   - CLAUDE.md forbids hardcoding tool names or versions.
-- *Checked by:* a scan of the package code finds tool names only in two help or comment strings, never in logic. 56 tests in `test_manifest.py` check the loader and the real manifest.
+- *Checked by:* a search of the package code finds tool names only in comments, docstrings and one `--help` example (`e.g. iverilog`), never in logic. 62 tests in `test_manifest.py` check the loader and the real manifest.
 
 **2. Standard library only.**
 - *Decision:* no third-party runtime dependency; `pyproject.toml` lists none. The package imports only standard-library modules (checked by scanning every import). pytest is needed only for the tests.
@@ -186,6 +187,17 @@ this to replace them with fakes.
 - *Reason:* on Ubuntu 24.04, `ghdl --version` works while compiling fails. Only compiling catches it.
 - *Checked by:* real output on Ubuntu 24.04 (section 7); `test_ghdl_installs_but_cannot_compile` uses that real failure; `test_failed_verification_offers_the_fallback` shows the installer recovering with `ghdl-gcc`.
 
+**8. Repairing an installed tool that fails a check.**
+- *Decision:* for a tool that is installed with a good enough version, `install` also runs the doctor's checks. If a check gives an ERROR:
+  - when every failed check is marked `repair = "fallback"` in the manifest, the plan says `repair` and runs the tool's apt fallback packages (GHDL's compile test: `sudo apt-get install -y ghdl-gcc`). Below the table, the plan shows which check failed and the first line of the error;
+  - otherwise the plan says `manual` and shows the check's fix. The fix is text written for a person (for GHDL's mcode check it is `sudo apt-get purge ghdl-mcode && ...`), so esim-toolman never runs it;
+  - a repair follows the same rules as an install: the apt simulation must not bring in a conflicting package. If the simulation shows the fallback is already installed, the plan says `manual`, because installing it again would change nothing.
+
+  `install --missing` also includes every installed tool, required or optional, whose checks give an ERROR. After a repair, verification re-runs the checks; a repair that still fails gets no second try. The action log names it `repair`.
+- *Reason:* a real run on Ubuntu 24.04 (2026-11-22) showed `doctor` reporting GHDL's compile test as an ERROR while `install ghdl --dry-run` planned "skip: already installed". The installer looked only at the version.
+- *How Ubuntu picks GHDL's backend* (checked on the real system, so the repair is not a guess): `/usr/bin/ghdl` is a shell script from `ghdl-common`, not an `update-alternatives` link. It runs `ghdl-$GHDL_BACKEND` if that variable is set and the program exists; otherwise the first of `/usr/bin/ghdl-mcode`, `ghdl-gcc` and `ghdl-llvm` that exists. `ghdl-gcc` installs `/usr/bin/ghdl-gcc` (its file list on packages.ubuntu.com), so once it is installed, plain `ghdl` uses the gcc backend. The one exception is `GHDL_BACKEND=llvm`, so the check's fix says to unset it.
+- *Checked by:* `test_installed_tool_whose_check_fails_gets_a_repair` (with the real `ghdl --version`, the real compile failure and the real `apt-get install -s ghdl-gcc`), `test_installed_tool_whose_checks_pass_is_skipped`, `test_missing_includes_an_installed_tool_that_fails_a_check`, `test_repair_runs_the_fallback_and_verifies_it`, `test_repair_that_does_not_help_fails_and_shows_the_fix`, `test_failed_check_without_a_repair_is_manual`; and `install ghdl --dry-run` and `install --missing --dry-run` on the real Ubuntu 24.04.
+
 **Further decisions:**
 - **Conflicts are checked by simulation.** Before installing a tool that has conflicting packages, apt's simulation (`apt-get install -s`, no root, no change) is asked what would be installed. If a conflict like `ghdl-mcode` would come along, or the simulation fails, the install is refused.
 - **Upgrade advice is checked against apt.** The doctor asks `apt-cache policy` for apt's newest version before suggesting an apt upgrade. If even that version is too old, it says so instead of suggesting a command that changes nothing.
@@ -209,7 +221,7 @@ and this design document. Status values:
 | Detect eSim's external tools | Done | `status`; run for real on Ubuntu 24.04 (all five found) and Windows 11 (Icarus found after a real install; the other four not installed) |
 | Check versions against what eSim needs | Done | `versions.py`; minimum and recommended versions from eSim's sources; version patterns tested against real output from Ubuntu 24.04 and from Bleyer's Icarus on Windows 11 |
 | Diagnose problems | Done on Ubuntu; partly on Windows | `doctor` run for real on Ubuntu 24.04 (found the GHDL compile failure and 5 warnings). On Windows it has run with only Icarus installed (it found the folder not on PATH) |
-| Install tools | Partly | `install` implemented with plan, dry run, confirmation, refusals, verification and fallback; 34 installer and 17 backend tests; dry runs on both systems. **One real install so far:** Icarus with winget on Windows 11. It worked, and exposed a bug that is now fixed: Bleyer's installer does not put Icarus on PATH. **No real apt install has been run yet** |
+| Install tools | Partly | `install` implemented with plan, dry run, confirmation, refusals, repair of installed tools that fail a check, verification and fallback; 44 installer and 17 backend tests; dry runs on both systems. **One real install so far:** Icarus with winget on Windows 11. It worked, and exposed a bug that is now fixed: Bleyer's installer does not put Icarus on PATH. **No real apt install has been run yet** |
 | Configure tools | Not done | No configuration step exists (no environment variables, no eSim config files) |
 | Linux with apt | Done for Ubuntu 24.04 | Tested under WSL2. Ubuntu 26.04 is in the manifest's supported list but has not been tested |
 | Windows with winget | Partly | Winget IDs confirmed with `winget show` for KiCad and Icarus only; ngspice, GHDL and Verilator have no usable winget package (the plan shows a manual fix). A real winget install of Icarus worked (2026-11-21); KiCad's has not been run |
@@ -218,18 +230,18 @@ and this design document. Status values:
 | No `sudo` or install without showing the plan and asking (unless `--yes`) | Done | Tested (decision 4) |
 | Python standard library only | Done | No dependencies; imports checked |
 | Python 3.11+ (CLAUDE.md) | Partly | The project requires 3.12+ (`pyproject.toml`), as decided during development; 3.11 is untested and CLAUDE.md still says 3.11+ |
-| Tests for each module | Done | 249 tests, one test file per module (`test_backends.py` covers `backends/`) |
+| Tests for each module | Done | 263 tests, one test file per module (`test_backends.py` covers `backends/`) |
 | Design document | Done | This document |
 
 ## 7. Testing
 
-**Automated tests: 249.** They pass on Windows 11 (Python 3.12.10 and 3.14.0) and on Ubuntu 24.04.5 under WSL2 (Python 3.12.3).
+**Automated tests: 263.** They pass on Windows 11 (Python 3.12.10 and 3.14.0) and on Ubuntu 24.04.5 under WSL2 (Python 3.12.3).
 
 | Test file | Tests | Covers |
 |---|---|---|
-| `test_manifest.py` | 58 | The loader's checks; the real manifest's data; version patterns against real output |
+| `test_manifest.py` | 62 | The loader's checks; the real manifest's data; version patterns against real output |
 | `test_doctor.py` | 45 | Every kind of finding; GHDL mcode and compile failures; apt checks; a replay of the whole Ubuntu 24.04 machine |
-| `test_installer.py` | 34 | Plan building, every refusal, dry run, confirmation, verification (passed, not on PATH, failed), fallback, the log, Windows PATH |
+| `test_installer.py` | 44 | Plan building, repairs of installed tools that fail a check, every refusal, dry run, confirmation, verification (passed, not on PATH, failed), fallback, the log, Windows PATH |
 | `test_detect.py` | 27 | Path expansion, search order, safe command running, timeouts and failures |
 | `test_versions.py` | 25 | Version parsing, comparison and every status |
 | `test_cli.py` | 23 | Text and JSON output, exit codes, `install` and `log` arguments |
@@ -243,18 +255,19 @@ and this design document. Status values:
 - In the installer tests, a fake install command changes the fake computer, for example making a program appear. That lets verification really pass or fail.
 
 **Real outputs as fixtures.**
-- `tests/fixtures/ubuntu-24.04/` holds 24 commands captured on Ubuntu 24.04.5 on 2026-11-20, each with its exit code and separate stdout and stderr, plus that machine's `/etc/os-release`. The captured commands are:
+- `tests/fixtures/ubuntu-24.04/` holds 25 commands captured on Ubuntu 24.04.5 (24 on 2026-11-20, one on 2026-11-22), each with its exit code and separate stdout and stderr, plus that machine's `/etc/os-release`. The captured commands are:
   - the five version commands;
   - the GHDL compile commands;
   - `dpkg-query` for 11 packages;
-  - `apt-cache policy` for 6 packages.
+  - `apt-cache policy` for 6 packages;
+  - `apt-get install -s ghdl-gcc` (a simulation; it installs nothing).
 - `tests/fixtures/windows-11/` holds `iverilog -V` from Bleyer's build, captured on Windows 11 on 2026-11-21 after the real winget install.
-- The version-pattern tests, the GHDL tests, the platform test and the "not on PATH" installer tests use them.
+- The version-pattern tests, the GHDL tests (doctor and repair), the platform test and the "not on PATH" installer tests use them.
 - `test_replay_of_the_real_ubuntu_2404_machine` replays the whole machine, so any command the doctor runs without a captured answer fails the test.
 
 **Runs on real systems.**
 - `status` and `doctor` on Ubuntu 24.04 (WSL2) with all five tools installed from apt, and on Windows 11, first with none installed and then with Icarus installed.
-- `install --dry-run --missing` on both.
+- `install --dry-run --missing` on both, and `install ghdl --dry-run` on Ubuntu 24.04, which plans the repair.
 - **A real install:** `install iverilog` on Windows 11 (2026-11-21), which ran winget. The first attempt was cancelled at Windows' prompt (logged as failed, exit code `0x8A15010C`). The second installed Icarus into `C:\iverilog\bin`.
 - The README's steps followed on Ubuntu 24.04 with an empty home folder, as a new user would. That run included cloning the GitHub repository and installing pytest from nothing.
 
@@ -265,10 +278,11 @@ and this design document. Status values:
 4. A developer note was shown to users.
 5. Missing KiCad library packages were not noticed.
 
-A later run found a note printed twice. The two README walk-throughs found five problems in the README and the help text, and a missing "Nothing to install." message. The real winget install found one more: verification said "not found" because Bleyer's installer does not put Icarus on PATH and the folder was not searched. It is fixed with a search path and the "installed, but not on PATH" outcome.
+A later run found a note printed twice. The two README walk-throughs found five problems in the README and the help text, and a missing "Nothing to install." message. The real winget install found one more: verification said "not found" because Bleyer's installer does not put Icarus on PATH and the folder was not searched. It is fixed with a search path and the "installed, but not on PATH" outcome. A later run on Ubuntu found that `install` ignored a failed doctor check: GHDL could not compile, yet the plan said "skip". It is fixed with the repair action (decision 8).
 
 **Not tested:**
-- a real install with apt, and a real KiCad install with winget;
+- a real install with apt, including the GHDL repair (`sudo apt-get install -y ghdl-gcc`). Its dry run was run for real; what it changes is known from the `/usr/bin/ghdl` script and the package's file list, not from running it;
+- a real KiCad install with winget;
 - a freshly installed Ubuntu (empty apt package lists, root user without `sudo`);
 - a non-WSL Ubuntu, and Ubuntu 26.04;
 - Windows with KiCad, ngspice, GHDL or Verilator installed;
@@ -288,6 +302,7 @@ A later run found a note printed twice. The two README walk-throughs found five 
 - **It must be run from the repository folder.** The manifest is found next to the package folder, so a copy installed with `pip install .` would not find it. This follows from the code; it has not been tried.
 - **Only Ubuntu is supported on Linux.** Other distributions get a warning, and their package names may differ.
 - **Newer than tested is still OK.** Versions above the recommended one are reported as OK, for example KiCad 10.
+- **Repairs use only the apt fallback packages.** A failed check whose fix is anything else (for example purging `ghdl-mcode`) is shown as `manual`. On Windows no repair is automatic, because winget has no fallback packages.
 - **Only the five tools in the manifest are covered.**
 
 ## 9. Future work during the internship

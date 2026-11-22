@@ -63,7 +63,9 @@
 #       symlinks followed, is inside one of `paths`; otherwise `problem`
 #       applies and the features in `breaks` will not work.
 #   Every kind also needs problem, fix (plain words) and source, and may
-#   have fix_linux / fix_windows: the exact command for that platform.
+#   have fix_linux / fix_windows: the exact command for that platform, and
+#   repair = "fallback": when the check fails on an installed tool,
+#   `install` may repair it by installing the tool's apt fallback packages.
 
 schema_version = 1
 
@@ -217,8 +219,15 @@ source = "eSim nghdl/install-nghdl.sh:242-248; nghdl/install-nghdl-scripts/GHDL-
 [[tools.ghdl.checks]]
 kind = "compile_test"
 commands = [["-a", "t.vhdl"], ["-e", "t"]]
+# Installing ghdl-gcc repairs it. Checked on Ubuntu 24.04 (2026-11-22):
+# /usr/bin/ghdl is a script from ghdl-common, not an update-alternatives link.
+# It runs ghdl-$GHDL_BACKEND if that exists, otherwise the first of
+# /usr/bin/ghdl-mcode, ghdl-gcc, ghdl-llvm that exists. ghdl-gcc installs
+# /usr/bin/ghdl-gcc (packages.ubuntu.com file list, noble-updates), so after
+# installing it plain `ghdl` uses the gcc backend, unless GHDL_BACKEND=llvm.
+repair = "fallback"
 problem = "GHDL is installed but cannot compile VHDL (known for ghdl-llvm on Ubuntu 24.04), so VHDL co-simulation hangs"
-fix = "Switch to the gcc backend: install ghdl-gcc"
+fix = "Switch to the gcc backend: install ghdl-gcc. On Ubuntu, also unset GHDL_BACKEND if it is set to llvm"
 fix_linux = "sudo apt-get install ghdl-gcc"
 fix_windows = "Reinstall eSim for Windows with its 'HDL toolchain' component."
 source = "eSim nghdl/install-nghdl.sh:199-213, 250-266; nghdl/install-nghdl-scripts/GHDL-BACKEND-26.04.md:108-130"

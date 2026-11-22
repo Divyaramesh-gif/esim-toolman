@@ -421,6 +421,35 @@ def test_unknown_platform_fix_key() -> None:
     expect_error(data, "tools.demo.checks[0]", "unknown", "fix_macos")
 
 
+# --------------------------------------------------------------------- repair
+
+
+def test_repair_is_optional_and_off_by_default() -> None:
+    tool = parse_manifest(valid_data()).tools["demo"]
+    assert [check.repair for check in tool.checks] == [None, None, None]
+
+
+def test_repair_fallback_is_read() -> None:
+    data = valid_data()
+    demo(data)["checks"][1]["repair"] = "fallback"
+    tool = parse_manifest(data).tools["demo"]
+    assert tool.checks[1].repair == "fallback"
+
+
+def test_unknown_repair_is_rejected() -> None:
+    data = valid_data()
+    demo(data)["checks"][1]["repair"] = "sudo apt-get install demo-lite"
+    expect_error(data, "tools.demo.checks[1].repair", "unknown repair", "fallback")
+
+
+def test_repair_fallback_needs_apt_fallback_packages() -> None:
+    # Without fallback packages there is nothing to repair with.
+    data = valid_data()
+    demo(data)["checks"][1]["repair"] = "fallback"
+    del demo(data)["install"]["apt"]["fallback"]
+    expect_error(data, "tools.demo.checks[1].repair", "install.apt.fallback")
+
+
 # ------------------------------------------------------------- load_manifest
 
 
@@ -485,6 +514,11 @@ def test_real_manifest_ghdl_checks_and_conflicts() -> None:
     assert isinstance(compile_test, CompileTestCheck)
     assert compile_test.files[0][0] == "t.vhdl"
     assert compile_test.fix_linux == "sudo apt-get install ghdl-gcc"
+    # `install` repairs a failed compile test with the apt fallback (ghdl-gcc);
+    # a failed mcode check is not repaired automatically.
+    assert compile_test.repair == "fallback"
+    assert ghdl.checks[0].repair is None
+    assert ghdl.apt.fallback == ("ghdl-gcc",)
 
 
 def test_real_manifest_ngspice_own_build_check() -> None:
