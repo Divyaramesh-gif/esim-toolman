@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from captured import UBUNTU_2404, all_runs, load
+from captured import UBUNTU_2404, UBUNTU_2404_GHDL_REPAIRED, all_runs, load
 
 from esim_toolman.doctor import (
     Finding,
@@ -211,13 +211,14 @@ def one(findings: list[Finding], key: str | None, check: str) -> Finding:
 
 
 def ghdl_machine(version_output: str) -> FakeMachine:
-    """GHDL installed and compiling fine; ghdl-llvm installed and
-    ghdl-mcode not (both dpkg answers are real, from Ubuntu 24.04)."""
+    """GHDL installed and compiling fine; ghdl-llvm installed, ghdl-gcc and
+    ghdl-mcode not (all three dpkg answers are real, from Ubuntu 24.04)."""
     machine = FakeMachine()
     machine.install("ghdl", version_output)
     machine.on_path["dpkg-query"] = "/usr/bin/dpkg-query"
     machine.responses[DPKG_GHDL_MCODE] = load("dpkg-query-ghdl-mcode")  # exit 1: unknown
     machine.responses[dpkg("ghdl-llvm")] = load("dpkg-query-ghdl-llvm")  # installed
+    machine.responses[dpkg("ghdl-gcc")] = load("dpkg-query-ghdl-gcc")  # not installed
     machine.responses[("ghdl", "-a", "t.vhdl")] = ("", 0)
     machine.responses[("ghdl", "-e", "t")] = ("", 0)
     return machine
@@ -490,6 +491,28 @@ def test_ghdl_installs_but_cannot_compile() -> None:
     assert compile_options[0]["timeout"] == 9
 
 
+def test_after_the_real_ghdl_repair_every_check_passes() -> None:
+    # The real machine on 2026-11-22, after `install ghdl` installed ghdl-gcc:
+    # every command answers as captured there.
+    machine = FakeMachine()
+    for name in (
+        "ghdl-version", "ghdl-analyze", "ghdl-elaborate",
+        "dpkg-query-ghdl-llvm", "dpkg-query-ghdl-gcc", "dpkg-query-ghdl-mcode",
+    ):
+        run = load(name, UBUNTU_2404_GHDL_REPAIRED)
+        program = run["command"][0]
+        machine.on_path[program_name(program)] = program
+        machine.responses[(program_name(program), *run["command"][1:])] = run
+    findings = for_tool(doctor(machine, manifest=GHDL_ONLY), "ghdl")
+
+    assert [f.severity for f in findings] == [Severity.OK] * 5
+    assert "GCC 13.3.0 code generator" in load("ghdl-version", UBUNTU_2404_GHDL_REPAIRED)["stdout"]
+    assert one(findings, "ghdl", "compile_test").problem == (
+        "GHDL compiled a small test file (t.vhdl) in a temporary folder."
+    )
+    assert one(findings, "ghdl", "apt_packages").problem == "Its apt packages are installed: ghdl-llvm, ghdl-gcc."
+
+
 def test_compile_test_runs_every_command_in_one_temp_folder() -> None:
     machine = ghdl_machine(GHDL_LLVM)
     folders: list[str | None] = []
@@ -594,6 +617,16 @@ def test_apt_packages(installed: set[str], severity: Severity) -> None:
     if severity is Severity.WARNING:
         assert "not installed: vhd-llvm" in finding.problem
         assert finding.fix == "sudo apt-get install vhd-llvm"
+
+
+def test_apt_packages_line_names_every_installed_package() -> None:
+    # Main and fallback packages both installed (as after GHDL's repair).
+    finding = one(doctor(vhd_machine({"vhd-llvm", "vhd-gcc"})), "vhd", "apt_packages")
+    assert finding.severity is Severity.OK
+    assert finding.problem == "Its apt packages are installed: vhd-llvm, vhd-gcc."
+    # Only the main package: the fallback is not named.
+    finding = one(doctor(vhd_machine({"vhd-llvm"})), "vhd", "apt_packages")
+    assert finding.problem == "Its apt packages are installed: vhd-llvm."
 
 
 def test_apt_packages_skipped_for_esims_own_build() -> None:

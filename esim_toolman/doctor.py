@@ -551,8 +551,9 @@ def _apt_packages(tool: Tool, path: str | None, ctx: _Context) -> list[Finding]:
     The program alone is not enough: on Ubuntu, `kicad` works without
     `kicad-symbols`, but then KiCad's standard libraries are missing. The
     check passes if every package in `packages` is installed, or every one
-    in `fallback`. It is skipped for eSim's own build, which is not an apt
-    package at all.
+    in `fallback`. The OK line names every package from both lists that is
+    installed (after GHDL's repair: ghdl-llvm and ghdl-gcc). It is skipped
+    for eSim's own build, which is not an apt package at all.
     """
     if ctx.info.system != "linux" or tool.apt is None or path is None:
         return []
@@ -560,17 +561,20 @@ def _apt_packages(tool: Tool, path: str | None, ctx: _Context) -> list[Finding]:
     if dpkg_query is None or _own_build_fix(tool, path, ctx) is not None:
         return []
 
-    missing = [p for p in tool.apt.packages if _apt_installed(p, dpkg_query, ctx) is False]
+    # True, False, or None (dpkg-query did not answer), once per package.
+    state = {p: _apt_installed(p, dpkg_query, ctx) for p in (*tool.apt.packages, *tool.apt.fallback)}
+    extra = [p for p in tool.apt.fallback if state[p] and p not in tool.apt.packages]
+    missing = [p for p in tool.apt.packages if state[p] is False]
     if not missing:
+        # A package dpkg-query did not answer for is not reported as missing.
+        names = [p for p in tool.apt.packages if state[p] is not False] + extra
         return [
             Finding(
                 tool.key, tool.name, Severity.OK, "apt_packages",
-                f"Its apt packages are installed: {', '.join(tool.apt.packages)}.",
+                f"Its apt packages are installed: {', '.join(names)}.",
             )
         ]
-    if tool.apt.fallback and all(
-        _apt_installed(p, dpkg_query, ctx) for p in tool.apt.fallback
-    ):
+    if tool.apt.fallback and all(state[p] for p in tool.apt.fallback):
         return [
             Finding(
                 tool.key, tool.name, Severity.OK, "apt_packages",

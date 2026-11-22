@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/usr/bin/apt-get",
+    "install",
+    "-s",
+    "ghdl-gcc"
+  ],
+  "exit_code": 0,
+  "stdout": "NOTE: This is only a simulation!\n      apt-get needs root privileges for real execution.\n      Keep also in mind that locking is deactivated,\n      so don't depend on the relevance to the real current situation!\nReading package lists...\nBuilding dependency tree...\nReading state information...\nghdl-gcc is already the newest version (4.1.0+dfsg-0ubuntu2.1).\n0 upgraded, 0 newly installed, 0 to remove and 84 not upgraded.\n",
+  "stderr": "",
+  "env": {
+    "LC_ALL": "C"
+  }
+}

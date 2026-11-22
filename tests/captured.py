@@ -1,6 +1,8 @@
 """Real command outputs captured on real machines, for tests.
 
 - tests/fixtures/ubuntu-24.04/: Ubuntu 24.04.5 (WSL2), 2026-11-20.
+- tests/fixtures/ubuntu-24.04-ghdl-repaired/: the same machine on
+  2026-11-22, after the real GHDL repair (ghdl-gcc installed).
 - tests/fixtures/windows-11/: Windows 11, 2026-11-21, after a real
   `winget install --id Icarus.Verilog`.
 
@@ -15,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 UBUNTU_2404 = Path(__file__).parent / "fixtures" / "ubuntu-24.04"
+UBUNTU_2404_GHDL_REPAIRED = Path(__file__).parent / "fixtures" / "ubuntu-24.04-ghdl-repaired"
 WINDOWS_11 = Path(__file__).parent / "fixtures" / "windows-11"
 
 

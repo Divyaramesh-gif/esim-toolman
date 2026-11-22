@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from captured import WINDOWS_11, load
+from captured import UBUNTU_2404, UBUNTU_2404_GHDL_REPAIRED, WINDOWS_11, load
 
 from esim_toolman.backends import AptBackend, WingetBackend
 from esim_toolman.installer import Action, Machine, build_plan, format_plan, install, make_machine
@@ -451,20 +451,31 @@ def test_no_fallback_in_the_manifest_means_no_second_question(tmp_path: Path) ->
 # marks `repair = "fallback"` is repaired with the apt fallback (ghdl-gcc).
 
 
+def answer_as_captured(computer: FakeComputer, folder: Path, pattern: str = "*.json") -> None:
+    """Every command captured in ``folder`` (files matching ``pattern``) is
+    on PATH and answers exactly as it did on that machine."""
+    for path in sorted(folder.glob(pattern)):
+        run = load(path.stem, folder)
+        name = program_name(run["command"][0])
+        computer.on_path.setdefault(name, f"/usr/bin/{name}")
+        computer.responses[(name, *run["command"][1:])] = run
+
+
 def broken_ghdl_computer() -> FakeComputer:
-    """The real Ubuntu 24.04 state: ghdl-llvm is installed, `ghdl --version`
-    works and compiling fails (both real captured outputs), and apt's real
-    simulation says installing ghdl-gcc installs only ghdl-gcc. Running the
-    install makes compiling work, as on Ubuntu, where /usr/bin/ghdl picks
-    ghdl-gcc over ghdl-llvm once it exists."""
+    """The real Ubuntu 24.04 state, replayed from captured outputs: ghdl-llvm
+    is installed, `ghdl --version` works, compiling fails, dpkg-query answers
+    as on 2026-11-20, and apt's simulation says installing ghdl-gcc installs
+    only ghdl-gcc. Running the install gives the real state after the
+    author's repair (2026-11-22): /usr/bin/ghdl runs ghdl-gcc, compiling
+    works, and dpkg-query says ghdl-gcc is installed."""
     computer = FakeComputer("apt-get")
-    computer.program("ghdl", ("--version",), load("ghdl-version"))
+    computer.program("ghdl", ("--version",), load("ghdl-version"))  # "llvm 18.1.8 code generator"
     computer.responses[("ghdl", "-a", "t.vhdl")] = load("ghdl-analyze")  # exit 3, libLLVM-18
     computer.responses[apt_simulate("ghdl-gcc")] = load("apt-get-install-s-ghdl-gcc")
+    answer_as_captured(computer, UBUNTU_2404, "dpkg-query-*.json")
 
     def install_gcc() -> tuple[str, int]:
-        computer.responses[("ghdl", "-a", "t.vhdl")] = ("", 0)
-        computer.responses[("ghdl", "-e", "t")] = ("", 0)
+        answer_as_captured(computer, UBUNTU_2404_GHDL_REPAIRED)  # "GCC 13.3.0 code generator"
         return ("", 0)
 
     computer.responses[apt_install("ghdl-gcc")] = install_gcc
@@ -533,13 +544,31 @@ def test_repair_runs_the_fallback_and_verifies_it(tmp_path: Path, capsys: pytest
     exit_code = install(MANIFEST, machine(computer, tmp_path), tool_key="ghdl")
 
     assert exit_code == 0
-    assert computer.questions == ["\nRun the 1 install command above? [y/N] "]
+    assert computer.questions == ["\nRun the 1 repair command above? [y/N] "]
     assert computer.installs_run() == [apt_install("ghdl-gcc")]
     (entry,) = log_entries(tmp_path)
     assert (entry["action"], entry["result"], entry["verification"]) == ("repair", "ok", "passed")
     assert entry["command"] == ["sudo", "apt-get", "install", "-y", "ghdl-gcc"]
-    assert entry["details"][0] == "GHDL 4.1.0 found at /usr/bin/ghdl."
-    assert "Verification passed" in capsys.readouterr().out
+    # The verification names the checks that passed, not only "found".
+    assert entry["details"] == [
+        "GHDL 4.1.0 found at /usr/bin/ghdl.",
+        'passed: `ghdl --version` does not mention "mcode".',
+        "passed: GHDL compiled a small test file (t.vhdl) in a temporary folder.",
+        "passed: Its apt packages are installed: ghdl-llvm, ghdl-gcc.",
+        "passed: The conflicting apt package ghdl-mcode is not installed.",
+    ]
+    out = capsys.readouterr().out
+    assert "Verification passed:\n    GHDL 4.1.0 found at /usr/bin/ghdl.\n    passed: " in out
+
+
+def test_plan_with_installs_and_repairs_asks_about_both(tmp_path: Path) -> None:
+    # --missing: ngspice is missing, KiCad works, GHDL is broken.
+    computer = broken_ghdl_computer()
+    computer.program("kicad-cli", ("version",), load("kicad-cli-version"))
+    computer.answers = ["n"]
+    assert install(MANIFEST, machine(computer, tmp_path), missing=True) == 1
+    assert computer.questions == ["\nRun the 2 commands above (1 install, 1 repair)? [y/N] "]
+    assert computer.installs_run() == []
 
 
 def test_repair_that_does_not_help_fails_and_shows_the_fix(tmp_path: Path) -> None:
@@ -571,13 +600,11 @@ def test_failed_check_without_a_repair_is_manual(tmp_path: Path) -> None:
 
 
 def test_repair_is_manual_when_the_fallback_is_already_installed(tmp_path: Path) -> None:
+    # ghdl-gcc is installed but compiling still fails (e.g. GHDL_BACKEND=llvm).
     # Installing ghdl-gcc again would change nothing, so it is not planned.
+    # apt's answer is the real one from after the repair.
     computer = broken_ghdl_computer()
-    computer.responses[apt_simulate("ghdl-gcc")] = (
-        "ghdl-gcc is already the newest version (4.1.0+dfsg-0ubuntu2.1).\n"
-        "0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.\n",
-        0,
-    )
+    computer.responses[apt_simulate("ghdl-gcc")] = load("apt-get-install-s-ghdl-gcc", UBUNTU_2404_GHDL_REPAIRED)
     (item,) = build_plan(MANIFEST, machine(computer, tmp_path), AptBackend(), tool_key="ghdl")
     assert item.action is Action.MANUAL
     assert "Its fallback (ghdl-gcc) is already installed" in item.reason

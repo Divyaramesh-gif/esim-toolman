@@ -29,14 +29,32 @@ entries each name the source they come from.
 - **`status` and `doctor` on real systems:**
   - Ubuntu 24.04 (WSL2), with ngspice, KiCad, GHDL, Verilator and Icarus Verilog installed from apt;
   - Windows 11, first with none of them installed, then with Icarus Verilog installed.
-- **`install`:** one real install so far, Icarus Verilog with winget on Windows 11. It worked, and it showed that the Icarus installer does not add itself to PATH, which esim-toolman now handles. **A real apt install has not been run yet.** Everything else in `install` is tested with simulated package managers, and `--dry-run` was run on both systems.
+- **`install`:** two real installs, run by the author:
+  - Windows 11: Icarus Verilog with winget. It installed, and showed that Bleyer's installer does not add `C:\iverilog\bin` to PATH. esim-toolman now finds Icarus there and prints the command to add the folder.
+  - Ubuntu 24.04: the GHDL repair with apt (`sudo apt-get install -y ghdl-gcc`). Verification passed, and `doctor` went from 1 error to 0.
+
+  Everything else in `install` is tested with simulated package managers, and `--dry-run` was run on both systems. A real apt install of a missing tool and a real KiCad install have not been run.
 - **Not tested:** Ubuntu 26.04 (listed in the manifest, but never run), a non-WSL Ubuntu, and eSim's own ngspice and Icarus builds.
+
+## Task 5 requirements
+
+The task asks for any 2 of these 5. Status, with what proves it:
+
+| Requirement | Status | Proof |
+|---|---|---|
+| 1. Tool installation management | Done, except choosing versions on apt | `install`, with real installs using winget (Icarus) and apt (`ghdl-gcc`). KiCad is pinned to 9.0.3 for winget. apt installs Ubuntu's own version (KiCad 7.0.11 on 24.04, below eSim's 9) |
+| 2. Update and upgrade system | Partly | `status` and `doctor` compare each version with eSim's recommended one and give the update command; on Ubuntu, `doctor` first checks what apt can reach. No lookup of newer releases; no `apt-get update` or `winget upgrade` |
+| 3. Configuration handling | Partly | `doctor` finds a tool outside PATH and prints the exact command to add its folder. esim-toolman does not run it, and sets no environment variables |
+| 4. Dependency checker | Done | `status` and `doctor`: missing tools, old versions, and broken ones (GHDL that cannot compile, the wrong GHDL backend, builds without eSim's code models, missing or conflicting apt packages), each with a fix |
+| 5. User interface | Done, except showing available updates | A CLI with `status`, `doctor`, `install` and `log` (the action log). "Updates" as in requirement 2 |
+
+The evidence for each, the optional extras and the deliverables are in [`docs/design.md`, section 6](docs/design.md#6-requirements-coverage).
 
 ## What it does not do
 
 - It does not build eSim's own ngspice or Icarus Verilog. `doctor` tells you when you need them and how to get them.
 - It does not add PPAs or run `sudo apt-get update`.
-- It does not set environment variables or configure eSim.
+- It does not change PATH, set environment variables or configure eSim. When a tool is outside PATH, `doctor` prints the exact command to add it.
 
 ## Requirements
 
@@ -125,7 +143,7 @@ For each tool, `doctor`:
   - for ngspice and Icarus Verilog, whether they are eSim's own builds;
 - on Ubuntu, checks that the tool's apt packages are installed and that no conflicting package is.
 
-Each problem is an `ERROR` or a `WARNING`. It names the eSim features it breaks, if any, and gives a fix for this computer. Checks that pass are listed as `OK`. Part of the real output from Ubuntu 24.04:
+Each problem is an `ERROR` or a `WARNING`. It names the eSim features it breaks, if any, and gives a fix for this computer. Checks that pass are listed as `OK`. Part of the real output from Ubuntu 24.04, before GHDL was repaired:
 
 ```
 GHDL
@@ -135,9 +153,18 @@ GHDL
                 sudo apt-get install ghdl-gcc
 ```
 
-`install` repairs this one for you (see below).
+`install` repairs this one for you (see below). The same machine after the repair:
 
-The last line of the report counts the findings, for example `1 error, 5 warnings, 10 OK`.
+```
+GHDL
+  OK       GHDL 4.1.0 found at /usr/bin/ghdl.
+  OK       `ghdl --version` does not mention "mcode".
+  OK       GHDL compiled a small test file (t.vhdl) in a temporary folder.
+  OK       Its apt packages are installed: ghdl-llvm, ghdl-gcc.
+  OK       The conflicting apt package ghdl-mcode is not installed.
+```
+
+The last line of the report counts the findings: `1 error, 5 warnings, 10 OK` before the repair, `0 errors, 5 warnings, 11 OK` after it.
 
 Exit code: **1** if there is any `ERROR`, otherwise **0**.
 
@@ -189,7 +216,9 @@ Why repair:
 Dry run: nothing was installed.
 ```
 
-A failed check becomes `repair` only if the manifest marks it `repair = "fallback"`: the repair installs the tool's apt fallback packages, here `ghdl-gcc`. On Ubuntu, `/usr/bin/ghdl` is a script that prefers `ghdl-gcc` over `ghdl-llvm` once both are installed, unless the `GHDL_BACKEND` environment variable says otherwise. Any other failed check (for example GHDL using the mcode backend) is shown as `manual`, with the `doctor`'s fix; esim-toolman does not run those fixes. The repair itself has not been run for real yet (see [What has been tested](#what-has-been-tested)).
+A failed check becomes `repair` only if the manifest marks it `repair = "fallback"`: the repair installs the tool's apt fallback packages, here `ghdl-gcc`. On Ubuntu, `/usr/bin/ghdl` is a script that prefers `ghdl-gcc` over `ghdl-llvm` once both are installed, unless the `GHDL_BACKEND` environment variable says otherwise. Any other failed check (for example GHDL using the mcode backend) is shown as `manual`, with the `doctor`'s fix; esim-toolman does not run those fixes.
+
+The author then ran `install ghdl` for real on that machine (2026-11-22). It asked, ran `sudo apt-get install -y ghdl-gcc`, and verification passed. `ghdl --version` now names the "GCC 13.3.0 code generator" instead of "llvm 18.1.8", and `doctor` reports no errors.
 
 What happens after the plan:
 
@@ -204,9 +233,9 @@ What happens after the plan:
    - apt's simulation (`apt-get install -s`, which changes nothing) shows the install would also bring in a conflicting package, such as `ghdl-mcode` for GHDL.
 
    The same rules apply to a repair. If the simulation shows the fallback packages are already installed, the plan says `manual` instead, because installing them again would change nothing.
-3. **It asks** `Run the N install commands above? [y/N]`. Only `y` or `yes` counts as yes.
+3. **It asks** `Run the N install commands above? [y/N]`. For repairs it says `repair commands`, and for both `Run the 3 commands above (2 install, 1 repair)?`. Only `y` or `yes` counts as yes.
 4. **It runs each command,** with apt's or winget's own output on screen, then **verifies** the result by re-running that tool's `doctor` checks. There are three possible results:
-   - **passed;**
+   - **passed:** the tool is found on PATH and no check gives an `ERROR`. Each check that passed is listed, for example `passed: GHDL compiled a small test file (t.vhdl) in a temporary folder.`;
    - **installed, but not on PATH:** the tool was found only in one of the manifest's extra folders. This happened in a real test: winget installed Icarus Verilog into `C:\iverilog\bin` without adding that folder to PATH. esim-toolman prints the command to add it;
    - **failed.**
 5. **If verification fails** and the manifest has a fallback (GHDL: `ghdl-llvm`, then `ghdl-gcc`), it offers the fallback, and asks again. A repair already is the fallback, so a repair that fails verification gets no second try; the verification lines show the `doctor`'s fix.
@@ -230,15 +259,21 @@ Every command that `install` actually ran is added as one JSON line to `~/.esim-
 
 A dry run, a refused step or a "no" runs nothing, so it is not logged. `log` prints the last 20 entries, or the last `-n N`.
 
-For example, after installing Icarus Verilog with apt on Ubuntu 24.04, the entry would look like this. The first indented line is what verification found; the second is a warning the doctor kept:
+The real entry from the GHDL repair on Ubuntu 24.04. The indented line is what verification found:
 
 ```
-2026-11-20T10:00:00+00:00  iverilog  install (apt)  ok, exit 0, verification passed: sudo apt-get install -y iverilog
-    Icarus Verilog 12.0 found at /usr/bin/iverilog.
-    warning: This Icarus Verilog is not eSim's own build. Ubuntu's iverilog package and Bleyer's Windows build have no libvvp, so d_cosim co-simulation will not work. The Verilog Verifier still works. Detected: /usr/bin/iverilog
+2026-11-22T11:18:34+00:00  ghdl  repair (apt)  ok, exit 0, verification passed: sudo apt-get install -y ghdl-gcc
+    GHDL 4.1.0 found at /usr/bin/ghdl.
 ```
 
-This Ubuntu entry is an example, built the same way the tests build one; no real apt install has been run yet (see [What has been tested](#what-has-been-tested)).
+That run showed verification saying only "found". Verification now also lists each check that passed, so the same repair would log these lines too (they are what the tests check, using the outputs captured on that machine after the repair):
+
+```
+    passed: `ghdl --version` does not mention "mcode".
+    passed: GHDL compiled a small test file (t.vhdl) in a temporary folder.
+    passed: Its apt packages are installed: ghdl-llvm, ghdl-gcc.
+    passed: The conflicting apt package ghdl-mcode is not installed.
+```
 
 ### Using a different manifest
 

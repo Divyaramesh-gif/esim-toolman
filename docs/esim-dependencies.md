@@ -172,6 +172,13 @@ Checked with `winget search <name> --source winget`, then `winget show --id <id>
 
 ## Tested on
 
+**The two real installs so far**, both run by the author. Each one found a bug that the tests had missed; details in the sections below.
+
+| Date | System | Command | What happened | Bug it found, now fixed |
+|---|---|---|---|---|
+| 2026-11-21 | Windows 11 | `install iverilog` (winget) | The first attempt was cancelled at Windows' administrator prompt and logged as failed (exit code 2316632332). The second installed Icarus into `C:\iverilog\bin`, but verification failed: not on PATH | Bleyer's installer does not add `C:\iverilog\bin` to PATH, and esim-toolman did not search that folder. Now it does: verification says "installed, but not on PATH", and `doctor` prints the exact command to add the folder |
+| 2026-11-22 | Ubuntu 24.04 (WSL2) | `install ghdl` (apt) | The plan said `repair`; `sudo apt-get install -y ghdl-gcc` ran and verification passed. `doctor` went from 1 error to 0 | Before this, `install` ignored failed doctor checks: it planned "skip" for a GHDL that could not compile. Now it runs the checks and plans the repair |
+
 ### Ubuntu 24.04.5 LTS under WSL2, 2026-11-20
 
 - **Machine:** Ubuntu 24.04.5 LTS under WSL2 on Windows 11 (kernel `6.18.58.1-microsoft-standard-WSL2`), Python 3.12.3.
@@ -203,7 +210,7 @@ What esim-toolman got wrong on this machine at first, each now fixed with a test
 4. **The ngspice note showed users a rule meant for esim-toolman's developers.** Fix: the rule moved into a TOML comment.
 5. **The missing KiCad library packages went unnoticed.** Fix: on Linux the doctor now checks that every apt package in the manifest is installed (or the fallback set). The check is skipped for eSim's own builds.
 
-### Ubuntu 24.04.5 LTS under WSL2, 2026-11-22: `install` ignored a failed check
+### Ubuntu 24.04.5 LTS under WSL2, 2026-11-22: `install` ignored a failed check; the real repair
 
 The same machine. `doctor` reported GHDL's compile test as an ERROR, but `install ghdl --dry-run` planned `skip`, "already installed: 4.1.0 at /usr/bin/ghdl". The installer looked only at the version.
 
@@ -223,7 +230,21 @@ Fixes, with tests:
 - `install` now runs the doctor's checks for an installed tool. A failed check that the manifest marks `repair = "fallback"` (GHDL's compile test) becomes a `repair` action, which installs the apt fallback (`sudo apt-get install -y ghdl-gcc`). The reason is shown under the plan. `install --missing` includes such tools too.
 - The check's fix now also says to unset `GHDL_BACKEND` if it is `llvm`.
 
-After the fix, `install ghdl --dry-run` and `install --missing --dry-run` both plan `repair  apt  sudo apt-get install -y ghdl-gcc`, with the reason "compile test failed: `ghdl -a t.vhdl` exited with code 3: ... libLLVM-18.so.18.1: cannot open shared object file ...". The repair itself has not been run yet: it needs `sudo`, so it is left to the author to run.
+After the fix, `install ghdl --dry-run` and `install --missing --dry-run` both plan `repair  apt  sudo apt-get install -y ghdl-gcc`, with the reason "compile test failed: `ghdl -a t.vhdl` exited with code 3: ... libLLVM-18.so.18.1: cannot open shared object file ...".
+
+**The real repair, the same day.** The author ran `python3 -m esim_toolman install ghdl`:
+
+- The plan said `repair`. After the confirmation, `sudo apt-get install -y ghdl-gcc` ran and verification passed. The action log entry: `ghdl  repair (apt)  ok, exit 0, verification passed: sudo apt-get install -y ghdl-gcc`.
+- `/usr/bin/ghdl-gcc` now exists next to `/usr/bin/ghdl-llvm`. `GHDL_BACKEND` is still not set, so the wrapper picks gcc, as predicted: `ghdl --version` now says "GCC 13.3.0 code generator", where it said "llvm 18.1.8 code generator".
+- `ghdl -a t.vhdl` and `ghdl -e t` both exit with 0. `doctor` went from "1 error, 5 warnings, 10 OK" to "0 errors, 5 warnings, 11 OK". Its GHDL section now reads "GHDL compiled a small test file (t.vhdl) in a temporary folder".
+- `apt-get install -s ghdl-gcc` now says "ghdl-gcc is already the newest version".
+- These outputs are saved in `tests/fixtures/ubuntu-24.04-ghdl-repaired/` and replayed by `test_after_the_real_ghdl_repair_every_check_passes` and the installer's repair tests.
+
+The real run showed three small gaps, fixed since with tests:
+
+1. Verification printed only "GHDL 4.1.0 found at /usr/bin/ghdl." It now also lists each check that passed, such as the compile test.
+2. The question said "Run the 1 install command above?" for a repair. It now says "repair".
+3. `doctor`'s apt line still said "Its apt packages are installed: ghdl-llvm." It now names every installed package from the tool's packages and fallback: "ghdl-llvm, ghdl-gcc".
 
 ### Windows 11, a real install of Icarus Verilog with winget, 2026-11-21
 
@@ -255,7 +276,7 @@ After the fix, on the same machine:
 - `doctor` warns that `C:\iverilog\bin` is not on PATH and gives the exact PowerShell command to add it.
 - The installer's verification of this install returns `not-on-path` instead of `failed`.
 
-Not tested yet (as of 2026-11-21): a real install with apt, a real (non-WSL) Ubuntu, Ubuntu 26.04, eSim's own ngspice and Icarus builds, the GHDL mcode backend, and Windows with KiCad, ngspice, GHDL or Verilator installed.
+Not tested yet (as of 2026-11-22): a real apt install of a tool that is missing (the one real apt run is the GHDL repair above), a real KiCad install, a real (non-WSL) Ubuntu, Ubuntu 26.04, eSim's own ngspice and Icarus builds, the GHDL mcode backend, and Windows with KiCad, ngspice, GHDL or Verilator installed.
 
 ## Known installer problems
 

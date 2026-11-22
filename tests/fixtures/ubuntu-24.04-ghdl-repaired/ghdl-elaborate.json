@@ -1,0 +1,10 @@
+{
+  "command": [
+    "/usr/bin/ghdl",
+    "-e",
+    "t"
+  ],
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": ""
+}

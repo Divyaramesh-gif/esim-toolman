@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/usr/bin/dpkg-query",
+    "-W",
+    "--showformat=${Status}",
+    "ghdl-mcode"
+  ],
+  "exit_code": 1,
+  "stdout": "",
+  "stderr": "dpkg-query: no packages found matching ghdl-mcode\n"
+}

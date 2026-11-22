@@ -7,7 +7,7 @@ A CLI that detects, diagnoses, installs and configures eSim's external tools
 (Ngspice, KiCad, GHDL, Verilator, etc.) on Linux (apt) and Windows (winget).
 
 ## Rules
-- Python 3.11+, standard library only. No third-party runtime dependencies.
+- Python 3.12+, standard library only. No third-party runtime dependencies.
 - Tool data lives in manifest/tools.toml. Code must not hardcode tool names or versions.
 - Every action that changes the system must support --dry-run and be written to the action log.
 - Never run sudo or install anything without showing the plan and asking for confirmation (unless --yes).

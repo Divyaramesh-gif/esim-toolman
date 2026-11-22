@@ -166,9 +166,7 @@ def install(
         print("\nNothing to install.")
         return EXIT_NOT_OK if blocked else EXIT_OK
 
-    count = len(to_install)
-    question = f"\nRun the {count} install command{'s' if count != 1 else ''} above?"
-    if not confirm(question, machine, yes):
+    if not confirm(run_question(to_install), machine, yes):
         print("Cancelled: nothing was installed.")
         return EXIT_NOT_OK
 
@@ -506,7 +504,9 @@ def verify(tool: Tool, machine: Machine) -> tuple[Verification, list[str]]:
     NOT_ON_PATH: found and without errors, but only in one of the manifest's
         extra folders, not on PATH (the doctor's "path" finding). The details
         then hold the doctor's exact command to add the folder to PATH.
-    PASSED: found, on PATH, without errors. Warnings are kept in the details.
+    PASSED: found, on PATH, without errors.
+    For PASSED and NOT_ON_PATH the details also list each check that passed
+    ("passed: GHDL compiled a small test file ...") and each warning.
     """
     which = _which_with_fresh_path(machine)
     detection, installed, _ = tool_status(tool, machine, which)
@@ -527,6 +527,12 @@ def verify(tool: Tool, machine: Machine) -> tuple[Verification, list[str]]:
         return Verification.FAILED, errors
 
     found = f"{tool.name} {installed or '(version unknown)'} found at {detection.path}."
+    # "installed" is the line above; the other OK findings are the checks.
+    passed = [
+        f"passed: {f.problem}"
+        for f in findings
+        if f.severity is Severity.OK and f.check != "installed"
+    ]
     warnings = [
         f"warning: {f.problem}"
         for f in findings
@@ -535,8 +541,25 @@ def verify(tool: Tool, machine: Machine) -> tuple[Verification, list[str]]:
     not_on_path = [f for f in findings if f.check == "path"]
     if not_on_path:
         fix = (not_on_path[0].fix or "").splitlines()
-        return Verification.NOT_ON_PATH, [found, not_on_path[0].problem, *fix, *warnings]
-    return Verification.PASSED, [found, *warnings]
+        return Verification.NOT_ON_PATH, [found, not_on_path[0].problem, *fix, *passed, *warnings]
+    return Verification.PASSED, [found, *passed, *warnings]
+
+
+def run_question(items: list[PlanItem]) -> str:
+    """The question before running the plan. It names what will run:
+    "Run the 2 install commands above?", "Run the 1 repair command above?",
+    or for both "Run the 3 commands above (2 install, 1 repair)?"."""
+    repairs = sum(item.action is Action.REPAIR for item in items)
+    installs = len(items) - repairs
+
+    def commands(count: int, kind: str) -> str:
+        return f"{count} {kind}command{'s' if count != 1 else ''}"
+
+    if repairs == 0:
+        return f"\nRun the {commands(installs, 'install ')} above?"
+    if installs == 0:
+        return f"\nRun the {commands(repairs, 'repair ')} above?"
+    return f"\nRun the {commands(len(items), '')} above ({installs} install, {repairs} repair)?"
 
 
 def confirm(question: str, machine: Machine, yes: bool) -> bool:
